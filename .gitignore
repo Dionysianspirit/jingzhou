@@ -1,6 +1,13 @@
 .env
+.venv/
 __pycache__/
 *.pyc
+*.pyo
 server.log
-*.jpg
-*.png
+data/store/
+*.npy
+.DS_Store
+方案说明书/
+*.mp4
+*.pptx
+*.docx
