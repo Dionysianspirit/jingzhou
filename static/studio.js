@@ -13,6 +13,13 @@ const headerInfo = $("#headerInfo");
 let selectedDocs = new Set();
 let allDocs = [];
 uploadZone.addEventListener("click", () => fileInput.click());
+uploadZone.addEventListener("dragover", (e) => { e.preventDefault(); uploadZone.classList.add("drag-over"); });
+uploadZone.addEventListener("dragleave", () => uploadZone.classList.remove("drag-over"));
+uploadZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  uploadZone.classList.remove("drag-over");
+  handleFiles(e.dataTransfer.files);
+});
 fileInput.addEventListener("change", () => handleFiles(fileInput.files));
 sendBtn.addEventListener("click", send);
 chatInput.addEventListener("keydown", (e) => {
@@ -23,22 +30,63 @@ document.querySelectorAll(".feat-card").forEach((btn) => {
 });
 $("#modalClose")?.addEventListener("click", () => { $("#modalMask").style.display = "none"; });
 $("#sampleBtn")?.addEventListener("click", loadSample);
+
 async function handleFiles(files) {
   for (const f of files) {
-    const text = await f.text();
-    await indexText(f.name.replace(/\.(txt|md|pdf)$/i, ""), text);
+    const lower = f.name.toLowerCase();
+    try {
+      if (lower.endsWith(".pdf") || f.type === "application/pdf") {
+        await indexPDF(f);
+      } else if (lower.endsWith(".txt") || lower.endsWith(".md") || (f.type || "").startsWith("text/")) {
+        await indexText(f.name.replace(/\.(txt|md)$/i, ""), await f.text());
+      } else {
+        toast("暂只收 PDF / TXT / MD：" + f.name);
+      }
+    } catch (err) {
+      toast("收卷失败：" + (err.message || f.name));
+    }
   }
+  if (fileInput) fileInput.value = "";
 }
+
+async function indexPDF(file) {
+  if (typeof pdfjsLib === "undefined") throw new Error("pdf.js 未加载");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  setPg(8);
+  toast("正在拆解 PDF…");
+  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const parts = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    parts.push(content.items.map((it) => it.str).join(" "));
+    setPg(8 + (i / pdf.numPages) * 70);
+  }
+  const text = parts.join("\n\n").replace(/[ \t]+\n/g, "\n").trim();
+  if (!text) { setPg(0); throw new Error("该 PDF 没有可提取文字（可能是扫描件）"); }
+  await indexText(file.name.replace(/\.pdf$/i, ""), text);
+}
+
+function setPg(p) {
+  const bar = $("#progress");
+  if (!bar) return;
+  bar.style.width = Math.max(0, Math.min(100, p)) + "%";
+  if (p >= 100) setTimeout(() => { bar.style.width = "0"; }, 400);
+}
+
 async function indexText(name, text) {
   const id = "d" + Math.random().toString(36).slice(2, 10);
   const res = await fetch(API + "/api/index", {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ doc_id: id, name, text }),
   });
-  if (!res.ok) { toast("收卷未成"); return; }
+  if (!res.ok) { toast("收卷未成"); setPg(0); return; }
+  setPg(100);
   toast("已收卷：" + name);
   await refreshDocs();
 }
+
 async function loadSample() {
   try {
     const res = await fetch(API + "/api/sample", { method: "POST" });
@@ -81,8 +129,10 @@ async function send() {
   if (chatEmpty) chatEmpty.style.display = "none";
   addMsg("user", query);
   const bubble = addMsg("assistant", "…");
-  const body = JSON.stringify({ query, doc_ids: [...selectedDocs], system: SYSTEM_PROMPT });
-  const res = await fetch(API + "/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+  const res = await fetch(API + "/api/chat", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, doc_ids: [...selectedDocs], system: SYSTEM_PROMPT }),
+  });
   const raw = await res.text();
   let text = ""; let sources = [];
   raw.split("\n").forEach((line) => {
@@ -98,7 +148,7 @@ async function send() {
   if (sources.length) {
     const box = document.createElement("div");
     box.className = "msg-sources";
-    box.innerHTML = `<span class="src-chip" style="cursor:default">检索解释：BGE 向量余弦 Top-${sources.length}，点击笺片查看原文</span>`;
+    box.innerHTML = `<span class="src-chip" style="cursor:default">检索解释：BGE 向量余弦 Top-${sources.length}</span>`;
     sources.forEach((s) => {
       const chip = document.createElement("button");
       chip.type = "button"; chip.className = "src-chip";
@@ -130,18 +180,15 @@ async function runFeature(name) {
 async function loadGuide(body) {
   $("#modalMask").style.display = "flex";
   $("#modalTitle").textContent = "指南";
-  $("#modalBody").textContent = "生成中…";
   const res = await fetch(API + "/api/study-guide", { method: "POST", headers: { "Content-Type": "application/json" }, body });
   const g = await res.json();
   $("#modalBody").innerHTML = `<h3>${esc(g.title || "学习指南")}</h3><p>${esc(g.overview || "")}</p><pre>${esc(JSON.stringify(g, null, 2))}</pre>`;
 }
 async function openChunk(s) {
-  const id = s.doc_id;
-  const idx = s.chunk ?? s.chunk_idx;
-  const item = await fetch(API + "/api/docs/" + id + "/chunks/" + idx).then((r) => r.json());
+  const item = await fetch(API + "/api/docs/" + s.doc_id + "/chunks/" + (s.chunk ?? s.chunk_idx)).then((r) => r.json());
   let drawer = $(".chunk-drawer");
   if (!drawer) { drawer = document.createElement("div"); drawer.className = "chunk-drawer"; document.body.appendChild(drawer); }
-  drawer.innerHTML = `<div>${esc(item.doc_name || s.name)} 片段${idx}</div><div>${esc(s.why || "")}</div><pre>${esc(item.text || s.preview || "")}</pre>`;
+  drawer.innerHTML = `<div>${esc(item.doc_name || s.name)} 片段${s.chunk ?? s.chunk_idx}</div><pre>${esc(item.text || "")}</pre>`;
 }
 function toast(msg) { headerInfo.textContent = msg; }
 function esc(s) {
