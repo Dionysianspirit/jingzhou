@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>径舟 · 面试演示</title>
+<style>
+  body { font-family: "Noto Serif SC", serif; background: #E8EDF2; color: #1E2937; margin: 0; padding: 24px; }
+  main { max-width: 720px; margin: 0 auto; }
+  button { background: #1E2937; color: #F7F5F2; border: 0; border-radius: 999px; padding: 8px 16px; cursor: pointer; font: inherit; }
+  textarea { width: 100%; min-height: 72px; margin: 12px 0; padding: 10px; font: inherit; }
+  .src { background: #F7F5F2; border-radius: 8px; padding: 10px 12px; margin: 8px 0; cursor: pointer; }
+  .why { color: #4A5568; font-size: 13px; }
+  pre { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>径舟演示</h1>
+  <p>完整书斋在 <a href="/">/</a>。本页对应面试五步。</p>
+  <p>
+    <button id="sample" type="button">载入示例教材《线性代数导引》</button>
+    <button id="guide" type="button">指南</button>
+  </p>
+  <textarea id="q">秩-零化度定理在说什么？和齐次方程有没有非零解有什么关系？</textarea>
+  <p><button id="ask" type="button">提问</button></p>
+  <pre id="out">尚未提问。</pre>
+  <div id="hits"></div>
+</main>
+<script>
+const out = document.getElementById("out");
+const hitsEl = document.getElementById("hits");
+let docId = "sample-linalg";
+document.getElementById("sample").onclick = async () => {
+  out.textContent = "载入中…";
+  const res = await fetch("/api/sample", { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) { out.textContent = JSON.stringify(data); return; }
+  docId = data.doc_id;
+  out.textContent = "示例教材已入舱：" + data.doc_id + " / " + data.chunks + " 块";
+};
+document.getElementById("ask").onclick = async () => {
+  const query = document.getElementById("q").value.trim();
+  out.textContent = "检索并作答…";
+  hitsEl.innerHTML = "";
+  const search = await fetch("/api/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, doc_ids: [docId], k: 6 }),
+  });
+  const found = await search.json();
+  (found.hits || []).forEach((h) => {
+    const d = document.createElement("div");
+    d.className = "src";
+    d.innerHTML = "<b>" + h.doc_name + " 片段" + h.chunk_idx + "</b> · " + Number(h.score).toFixed(3) + "<div class=why>" + (h.why || "") + "</div>";
+    d.onclick = async () => {
+      const c = await fetch("/api/docs/" + h.doc_id + "/chunks/" + h.chunk_idx).then((r) => r.json());
+      alert(c.text || "无片段");
+    };
+    hitsEl.appendChild(d);
+  });
+  const chat = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, doc_ids: [docId] }),
+  });
+  const raw = await chat.text();
+  const texts = [];
+  raw.split("\n").forEach((line) => {
+    if (!line.startsWith("data: ") || line.includes("[DONE]")) return;
+    try { const p = JSON.parse(line.slice(6)); if (p.text) texts.push(p.text); } catch (e) {}
+  });
+  out.textContent = texts.join("") || raw.slice(0, 800);
+};
+document.getElementById("guide").onclick = async () => {
+  out.textContent = "生成指南…";
+  const res = await fetch("/api/study-guide", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ doc_ids: [docId], query: "导读 核心概念 易错点 思考题" }),
+  });
+  out.textContent = JSON.stringify(await res.json(), null, 2);
+};
+</script>
+</body>
+</html>
