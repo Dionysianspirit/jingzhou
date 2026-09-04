@@ -1,119 +1,81 @@
-# 径舟 · JingZhou
+# 径舟
 
-> 书山有径，学海泛舟。
+基于语义检索的多文档 AI 学习助手。上传讲义或教材，按语义找到相关片段，再让模型只根据这些片段回答、出题、画脉络、写学习指南。
 
-**径舟** 是一个基于语义检索（RAG）的多文档 AI 学习助手。上传 PDF 文档后，它以书童「小舟」的口吻与你对答，并能从文档中自动生成闪卡、测验、思维导图、学习报告、信息图与数据表格。
+产品形态参考腾讯 IMA 与 Google NotebookLM：私有资料入库、问答必须溯源、学习材料一键生成。实现刻意做成「可以把检索过程讲清楚」的工程，而不是黑盒包装。
 
-后端为单文件 FastAPI 服务，前端为单文件古典书斋风页面，向量检索在本地内存中完成——除 LLM API 调用外，文档数据不出本机。
+## 克隆后 5 分钟跑起来
 
-## 功能特性
-
-| 功能 | 说明 |
-| --- | --- |
-| 💬 多文档问答 | 跨文档语义检索 + SSE 流式回答，逐条标注来源 `[来源: 文档名 片段N]`，支持自定义人设 |
-| 🃏 笺卡（闪卡） | 自动提取关键概念、定义、公式，生成问答式记忆卡片 |
-| 📝 测验 | 生成带区分度的选择题，并对每个错误选项做四类归因：概念混淆 / 公式遗忘 / 审题偏移 / 推导断裂 |
-| 🧭 卷宗览图 | 将知识结构生成为 Markdown 层级大纲，经 markmap 渲染为交互式思维导图 |
-| 📜 学习报告 | 流式输出含摘要、核心概念、关键发现的结构化报告 |
-| 📊 信息图 | 提取关键数据点、对比组与概念流程，由 ECharts 可视化 |
-| 📋 表格 | 从文档中抽取对比数据、指标参数，输出 Markdown 表格 |
-
-## 技术架构
-
-```mermaid
-flowchart LR
-    subgraph 浏览器
-        A[static/index.html<br>书斋风 UI] -- PDF.js 解析文本 --> B[POST /api/index]
-        A <-. SSE 流式 .-> C[/api/chat · report/]
-    end
-    subgraph FastAPI 服务 server.py
-        B --> D[DocStore<br>分块 2048 字符 / 重叠 512]
-        D --> E[sentence-transformers<br>BAAI/bge-small-zh-v1.5]
-        E --> F[内存向量矩阵<br>L2 归一化 · 点积即余弦]
-        C --> F
-        C --> G[OpenAI 兼容 LLM API]
-    end
-```
-
-- **嵌入模型**：`BAAI/bge-small-zh-v1.5`，本地运行，默认走 `hf-mirror.com` 国内镜像下载
-- **检索**：分块（2048 字符 / 512 重叠，按段落与句号智能切分）→ L2 归一化 → 点积余弦相似度 Top-8
-- **生成**：OpenAI 兼容接口，可指向任意服务商（GPT / DeepSeek / Kimi / 本地 vLLM 等）
-- **前端**：零构建单 HTML，PDF.js 在浏览器端解析 PDF，ECharts + markmap 负责可视化
-
-## 快速开始
-
-### 环境要求
-
-- Python 3.10+
-- 一个 OpenAI 兼容的 LLM API Key
-
-### 1. 配置
-
-在项目根目录创建 `.env`：
-
-```env
-LLM_API_KEY=sk-你的密钥
-# 以下为可选项
-LLM_BASE_URL=https://api.openai.com/v1   # 任意 OpenAI 兼容端点
-LLM_MODEL=gpt-4o                          # 使用的模型
-EMBED_MODEL=BAAI/bge-small-zh-v1.5        # 本地嵌入模型
-```
-
-### 2. 启动
-
-**Windows 一键启动**：双击 `start.bat`（自动装依赖、起服务、开浏览器）。
-
-**手动启动**：
+需要：Python 3.10+，以及任意 OpenAI 兼容接口的 Key（官方 / 中转 / 国产均可）。
 
 ```bash
-pip install -r requirements.txt
-python server.py
+git clone https://github.com/Dionysianspirit/jingzhou.git
+cd jingzhou
+cp .env.example .env               # 填入 LLM_API_KEY
+chmod +x start.sh && ./start.sh    # Windows 用 start.bat
 ```
 
-服务就绪后访问 <http://127.0.0.1:8777>。
+浏览器打开 `http://127.0.0.1:8777`，点「载入示例教材」，选中卷册后提问，例如：
 
-> 首次启动需下载嵌入模型（约 100MB），已默认配置国内镜像。如遇网络问题，可在 `.env` 中设置 `HF_TOKEN`。
+> 秩-零化度定理在说什么？和齐次方程有没有非零解有什么关系？
 
-## API 一览
+首次启动会从 HuggingFace 镜像下载 `BAAI/bge-small-zh-v1.5`（约百兆），之后本地缓存。关进程再开，文档向量会从 `data/store/` 读回，不必重传。
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `POST` | `/api/index` | 索引文档（doc_id + 纯文本，上限 10MB） |
-| `POST` | `/api/remove` | 移除文档 |
-| `GET` | `/api/docs` | 列出已索引文档 |
-| `POST` | `/api/chat` | RAG 问答（SSE 流式，返回回答 + 来源片段） |
-| `POST` | `/api/flashcards` | 生成闪卡（JSON） |
-| `POST` | `/api/quiz` | 生成测验（含错因分析，JSON） |
-| `POST` | `/api/mindmap` | 生成思维导图（Markdown） |
-| `POST` | `/api/report` | 生成学习报告（SSE 流式） |
-| `POST` | `/api/infographic` | 提取信息图结构化数据（JSON） |
-| `POST` | `/api/table` | 提取数据表格（Markdown） |
-
-## 项目结构
-
-```
-jingzhou/
-├── server.py            # 后端：FastAPI + DocStore + 全部 API（单文件）
-├── requirements.txt
-├── start.bat            # Windows 一键启动脚本
-├── static/
-│   └── index.html       # 前端：古典书斋风单页应用（零构建）
-└── 方案说明书/           # 项目方案书、演示 PPT 与视频
+```bash
+python -m unittest discover -s tests -v
 ```
 
-## 设计取舍
+## 能做什么
 
-- **纯内存存储**：索引随进程退出而清空，换来零依赖、零配置——适合个人学习与课堂演示场景
-- **单文件架构**：前后端各一个文件，牺牲工程化换取「拷走即跑」
-- **CORS 全开放**：面向本机开发环境，如需暴露到公网请自行收窄
+| 能力 | 说明 |
+|---|---|
+| 多文档入库 | PDF / TXT / MD，按段切块后做中文向量 |
+| 可解释检索 | 返回 top-k、余弦分数、字词重叠、选中原因 |
+| 可点击溯源 | 回答里的笺片跳到原文片段 |
+| 伴读问答 | 只根据命中块生成，引用格式 `[来源: 文档 片段N]` |
+| 学习指南 | 导读、要点、易错、思考题（NotebookLM Study Guide） |
+| 笺卡 / 考核 / 脉络 / 析报 | 原有学习工具，考核含四种错因分类 |
 
-## 路线展望
+## 架构
 
-- [ ] 向量持久化（SQLite / FAISS）
-- [ ] 会话历史与多轮对话
-- [ ] 更多文档格式（DOCX / Markdown / EPUB）
-- [ ] 闪卡导出 Anki
+```
+上传文本
+  → 段落下切块（句号硬切 + 重叠 + 短尾合并）
+  → BGE-small-zh 编码，L2 归一化
+  → 写入内存矩阵，并落盘 data/store/<id>/{meta,chunks,embeddings}
+提问
+  → 问句同样编码
+  → score = dot(chunk, query)   # 因已归一化，即余弦
+  → 取 top-k，附 overlap / why
+  → 仅把这些块塞进 LLM 上下文
+  → 流式回答 + 可点击来源
+```
 
----
+关键模块：
 
-径舟书斋，伴读不倦。📖
+- [`app/chunking.py`](app/chunking.py) 切块，无模型依赖，有单测
+- [`app/store.py`](app/store.py) 检索、持久化、解释字段
+- [`app/embeddings.py`](app/embeddings.py) BGE 线程池
+- [`app/main.py`](app/main.py) FastAPI 路由
+- [`static/index.html`](static/index.html) 书斋界面
+
+## 面试时建议讲的三点
+
+1. **为什么这样切块**：段先行，超长段按句号切，重叠防止定义落在边界上，短尾合并避免噪声向量。
+2. **为什么余弦等于点积**：`normalize_embeddings=True` 之后向量在单位球上，点积就是余弦；分数可直接比较。
+3. **生成如何被检索约束**：系统提示禁止外部知识，引用必须带片段号，前端用 `doc_id + chunk_idx` 回查原文，避免「有引用看起来却点不开」。
+
+更完整的口述稿见 [INTERVIEW.md](INTERVIEW.md)。
+
+## 回退
+
+改造前的完整旧树在分支 [`backup/pre-hardening`](https://github.com/Dionysianspirit/jingzhou/tree/backup/pre-hardening)（含单文件 `server.py` 和当时的 README）。若当前 `main` 不可用：
+
+```bash
+git fetch origin
+git checkout backup/pre-hardening
+```
+
+## 环境变量
+
+见 `.env.example`。`LLM_BASE_URL` 可指向任何 OpenAI 兼容网关。
