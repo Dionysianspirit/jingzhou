@@ -117,3 +117,26 @@ class AgentStore:
             return AgentMemory.model_validate_json(path.read_text(encoding="utf-8"))
         except Exception:
             return None
+
+    def list_sessions(self) -> list[dict]:
+        """Summaries of all stored sessions, newest first; corrupt files are skipped."""
+        items: list[dict] = []
+        for path in self.root.glob("*.json"):
+            try:
+                mem = AgentMemory.model_validate_json(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            items.append(
+                {
+                    "session_id": mem.session_id,
+                    "goal": mem.goal,
+                    "status": mem.status,
+                    "stage": mem.stage,
+                    "step_count": mem.step_count,
+                    "doc_ids": mem.doc_ids,
+                    "weakness_count": len(mem.weaknesses),
+                    "updated_at": mem.updated_at,
+                }
+            )
+        items.sort(key=lambda x: (x["updated_at"], x["session_id"]), reverse=True)
+        return items

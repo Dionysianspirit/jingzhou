@@ -384,6 +384,51 @@ class UnitTests(unittest.TestCase):
     def test_parse_json_strips_fences(self):
         self.assertEqual(parse_json('```json\n{"a": 1}\n```'), {"a": 1})
 
+    def test_list_sessions_orders_and_skips_corrupt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AgentStore(Path(tmp))
+
+            def write(sid, **fields):
+                record = {"session_id": sid, "goal": sid, **fields}
+                (Path(tmp) / f"{sid}.json").write_text(
+                    json.dumps(record, ensure_ascii=False), encoding="utf-8"
+                )
+
+            write("aaa", status="awaiting_answers", updated_at=100, step_count=2)
+            write("bbb", status="finished", updated_at=200, step_count=5)
+            (Path(tmp) / "bad.json").write_text("not-json{", encoding="utf-8")
+
+            items = store.list_sessions()
+            self.assertEqual([i["session_id"] for i in items], ["bbb", "aaa"])
+            self.assertEqual(items[0]["status"], "finished")
+            self.assertEqual(items[0]["step_count"], 5)
+            self.assertEqual(items[1]["weakness_count"], 0)
+
+    def test_list_endpoint_returns_summaries(self):
+        from fastapi.testclient import TestClient
+
+        import app.main as main_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            st = AgentStore(Path(tmp))
+            mem = make_memory(goal="恢复用会话")
+            mem.status = "awaiting_answers"
+            mem.record_step("search_knowledge", {"query": "x"}, "理由", True, "命中 2 条")
+            st.save(mem)
+
+            with patch.object(main_mod, "agent_store", st):
+                client = TestClient(main_mod.app)
+                resp = client.get("/api/agent")
+                self.assertEqual(resp.status_code, 200)
+                body = resp.json()
+                self.assertEqual(len(body), 1)
+                self.assertEqual(body[0]["session_id"], mem.session_id)
+                self.assertEqual(body[0]["status"], "awaiting_answers")
+                self.assertEqual(body[0]["step_count"], 1)
+                # summaries must not carry quiz payloads or answers
+                self.assertNotIn("quiz", body[0])
+                self.assertNotIn("steps", body[0])
+
 
 if __name__ == "__main__":
     unittest.main()

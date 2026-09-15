@@ -96,8 +96,8 @@ flowchart TD
 - **受控保证**：硬性步数预算（默认 8，`AGENT_MAX_STEPS` 可调 6–10）；工具白名单外的调用直接拒绝；相同工具+参数的重复调用拦截；同一工具连续失败 2 次熔断结束；检索无命中/资料不存在时诚实终止而非编造；决策 JSON 解析失败重试一次后报错收场
 - **人在环上**：出题后暂停等学习者作答，答案只经 `POST /api/agent/{sid}/answers` 进入，Agent 无法自行编造答题结果（LLM 主动调用 `analyze_mistakes` 会被拒绝）
 - **可解释**：SSE 事件流 `planning / tool_call / tool_result / state_update / awaiting_input / final`，每步带一句面向用户的理由，不展示内部 chain-of-thought；测验下发给前端时会剥离正确答案，判分在服务端完成
-- **会话持久化**：`data/agent/<session_id>.json` 记录目标、步骤、发现、测验、薄弱点与出处，`GET /api/agent/{sid}` 可随时回看状态
-- **限制**：单轮复习闭环（不含跨会话长期记忆与用户画像）；前端暂无「恢复未完成会话」入口（API 已支持）；测验轮数受步数预算约束
+- **会话持久化**：`data/agent/<session_id>.json` 记录目标、步骤、发现、测验、薄弱点与出处，`GET /api/agent` 列出全部会话，「自主」页可一键恢复待作答会话（重建时间线后继续交卷）或回看已了结的总结
+- **限制**：单轮复习闭环（不含跨会话长期记忆与用户画像）；测验轮数受步数预算约束
 
 ## API 一览
 
@@ -114,6 +114,7 @@ flowchart TD
 | `POST` | `/api/flashcards` · `/api/quiz` | 笺卡、考核（考核含错因分类） |
 | `POST` | `/api/mindmap` · `/api/report` | 脉络（Markdown）、析报（SSE） |
 | `POST` | `/api/infographic` · `/api/table` | 览图数据、簿册（JSON） |
+| `GET` | `/api/agent` | 会话摘要列表（待作答可恢复、已了结可回看） |
 | `POST` | `/api/agent` | 发起自主学习（SSE：planning/tool_call/tool_result/state_update/awaiting_input/final） |
 | `POST` | `/api/agent/{session_id}/answers` | 提交诊断题答案，Agent 续跑判分→讲解→总结（SSE） |
 | `GET` | `/api/agent/{session_id}` | 回看会话状态（待作答时不含答案） |
@@ -177,9 +178,9 @@ git fetch origin && git checkout backup/pre-hardening
 - [x] 向量持久化
 - [x] 可解释检索与来源回查
 - [x] 自主学习 Agent（单 Agent 多步闭环）
+- [x] Agent 会话恢复（待作答续跑 + 总结回看）
 - [ ] BM25 混合检索
 - [ ] 会话历史与多轮对话
-- [ ] Agent 前端恢复未完成会话
 - [ ] 更多文档格式（DOCX / EPUB）
 - [ ] 闪卡导出 Anki
 

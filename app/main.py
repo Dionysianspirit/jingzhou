@@ -343,6 +343,11 @@ async def agent_answers(session_id: str, req: AgentAnswersRequest):
     )
 
 
+@app.get("/api/agent")
+async def agent_list():
+    return agent_store.list_sessions()[:50]
+
+
 @app.get("/api/agent/{session_id}")
 async def agent_state(session_id: str):
     mem = agent_store.load(session_id)
