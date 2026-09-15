@@ -46,6 +46,8 @@ class AgentMemory(BaseModel):
     findings: list[str] = Field(default_factory=list)
     quiz: list[dict] | None = None
     pending_answers: list[int] | None = None
+    # wrong answers in the most recently analyzed round; None = never analyzed
+    last_quiz_wrong: int | None = None
     weaknesses: list[WeakPoint] = Field(default_factory=list)
     sources: list[dict] = Field(default_factory=list)
     final_summary: str = ""

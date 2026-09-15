@@ -330,6 +330,192 @@ class AgentFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("拒绝", mem.steps[0].result_summary)
         self.assertEqual(mem.weaknesses, [])
 
+    async def test_quiz_spiral_stops_on_clean_round(self):
+        async def fake_gen_quiz(store, doc_ids, query, count):
+            return [dict(q) for q in QUIZ]
+
+        with patch("app.features.gen_quiz", fake_gen_quiz), patch("app.llm.complete", text_fake):
+            # Round 1: search + broad diagnostic quiz.
+            fake, _ = decisions(
+                {
+                    "stage": "检索",
+                    "reason": "先检索。",
+                    "action": "search_knowledge",
+                    "args": {"query": "线性映射 秩 特征值"},
+                },
+                {
+                    "stage": "诊断",
+                    "reason": "全面诊断。",
+                    "action": "create_quiz",
+                    "args": {"topic": "前三章核心概念", "count": 4},
+                },
+            )
+            with patch("app.llm.complete_json", fake):
+                mem = make_memory()
+                await collect(mem, FakeStore(), persist=self.persist)
+            self.assertEqual(mem.status, "awaiting_answers")
+
+            # Round 2: one wrong answer keeps the spiral going.
+            fake, _ = decisions(
+                {
+                    "stage": "再诊断",
+                    "reason": "仍有薄弱点，针对出小测。",
+                    "action": "create_quiz",
+                    "args": {"topic": "针对薄弱点二次诊断", "count": 2},
+                }
+            )
+            mem.pending_answers = [0, 1]
+            mem.status = "running"
+            with patch("app.llm.complete_json", fake):
+                await collect(mem, FakeStore(), persist=self.persist)
+            self.assertEqual(mem.status, "awaiting_answers")
+            self.assertEqual(mem.last_quiz_wrong, 1)
+
+            # Round 3: clean answers — a further quiz must be rejected.
+            fake, _ = decisions(
+                {
+                    "stage": "再诊断",
+                    "reason": "试图继续出题。",
+                    "action": "create_quiz",
+                    "args": {"topic": "第三轮针对残余薄弱点", "count": 2},
+                },
+                {
+                    "stage": "讲解",
+                    "reason": "讲解薄弱点。",
+                    "action": "answer_question",
+                    "args": {"question": "特征向量的定义"},
+                },
+                {"stage": "总结", "reason": "完成。", "action": "finish", "args": {}},
+            )
+            mem.pending_answers = [0, 0]
+            mem.status = "running"
+            with patch("app.llm.complete_json", fake):
+                lines = await collect(mem, FakeStore(), persist=self.persist)
+
+        quiz_steps = [s for s in mem.steps if s.tool == "create_quiz"]
+        self.assertEqual([s.ok for s in quiz_steps], [True, True, False])
+        self.assertIn("无需再测", quiz_steps[2].result_summary)
+        self.assertEqual(mem.last_quiz_wrong, 0)
+        self.assertEqual(len(mem.weaknesses), 1)  # only the round-2 miss survives
+        self.assertEqual(mem.status, "finished")
+        self.assertEqual(mem.stop_reason, "completed")
+        final = next(e for e in parse_events(lines) if e["type"] == "final")
+        self.assertEqual(len(final["weaknesses"]), 1)
+
+    async def test_quiz_spiral_runs_until_budget(self):
+        async def fake_gen_quiz(store, doc_ids, query, count):
+            return [dict(q) for q in QUIZ]
+
+        with patch("app.features.gen_quiz", fake_gen_quiz), patch("app.llm.complete", text_fake):
+            fake, _ = decisions(
+                {
+                    "stage": "检索",
+                    "reason": "先检索。",
+                    "action": "search_knowledge",
+                    "args": {"query": "线性映射 秩 特征值"},
+                },
+                {
+                    "stage": "诊断",
+                    "reason": "全面诊断。",
+                    "action": "create_quiz",
+                    "args": {"topic": "第1轮诊断", "count": 4},
+                },
+            )
+            with patch("app.llm.complete_json", fake):
+                mem = make_memory()
+                await collect(mem, FakeStore(), persist=self.persist, max_steps=6)
+            self.assertEqual(mem.status, "awaiting_answers")
+
+            # Every round misses both questions; the spiral keeps going.
+            for round_no in (2, 3):
+                fake, _ = decisions(
+                    {
+                        "stage": "再诊断",
+                        "reason": "仍有薄弱点。",
+                        "action": "create_quiz",
+                        "args": {"topic": f"第{round_no}轮薄弱点", "count": 2},
+                    }
+                )
+                mem.pending_answers = [1, 1]
+                mem.status = "running"
+                with patch("app.llm.complete_json", fake):
+                    await collect(mem, FakeStore(), persist=self.persist, max_steps=6)
+                self.assertEqual(mem.status, "awaiting_answers")
+
+            # Budget spent: final answers still get scored, then the loop stops.
+            mem.pending_answers = [1, 1]
+            mem.status = "running"
+            with patch("app.llm.complete_json", decisions()[0]):
+                lines = await collect(mem, FakeStore(), persist=self.persist, max_steps=6)
+
+        quiz_steps = [s for s in mem.steps if s.tool == "create_quiz"]
+        self.assertEqual([s.ok for s in quiz_steps], [True, True, True])
+        analyze_steps = [s for s in mem.steps if s.tool == "analyze_mistakes" and s.ok]
+        self.assertEqual(len(analyze_steps), 3)  # last scoring runs past the budget
+        self.assertEqual(len(mem.weaknesses), 6)  # 2 misses per scored round
+        self.assertEqual(mem.status, "finished")
+        self.assertEqual(mem.stop_reason, "max_steps")
+        final = next(e for e in parse_events(lines) if e["type"] == "final")
+        self.assertEqual(final["stop_reason"], "max_steps")
+
+    async def test_answer_question_reports_citations(self):
+        cited = "讲解正文。\n[来源: 线性代数导引 片段0]\n[来源: 线性代数导引 片段7]"
+
+        async def cited_complete(system, user, **kw):
+            return cited
+
+        fake, _ = decisions(
+            {
+                "stage": "讲解",
+                "reason": "讲解薄弱点。",
+                "action": "answer_question",
+                "args": {"question": "线性相关的含义"},
+            },
+            {"stage": "总结", "reason": "完成。", "action": "finish", "args": {}},
+        )
+        with patch("app.llm.complete_json", fake), patch("app.llm.complete", cited_complete):
+            mem = make_memory()
+            lines = await collect(mem, FakeStore(), persist=self.persist)
+
+        result = next(
+            e
+            for e in parse_events(lines)
+            if e["type"] == "tool_result" and e["tool"] == "answer_question"
+        )
+        cites = {c["chunk"]: c for c in result["data"]["citations"]}
+        self.assertTrue(cites[0]["verified"])  # chunk 0 reads back via read_source
+        self.assertTrue(cites[0]["in_context"])  # and was part of the context
+        self.assertFalse(cites[7]["verified"])  # hallucinated chunk number
+        self.assertIn("1 处未能在原文核对", result["summary"])
+
+    async def test_verify_citations_via_read_source(self):
+        from app.tools import ToolContext, verify_citations
+
+        mem = make_memory()
+        ctx = ToolContext(FakeStore(), mem)
+        results = [HITS[0]]  # only chunk 0 was handed to the LLM
+        answer = (
+            "正文 [来源: 线性代数导引 片段0] 与 [来源: 线性代数导引 片段1]"
+            " 与 [来源: 线性代数导引 片段7] 与 [来源: 凭空文档 片段0] 与 [来源: 线性代数导引 片段0]"
+        )
+        cites = await verify_citations(answer, results, ctx)
+        by_key = {(c["name"], c["chunk"]): c for c in cites}
+        self.assertEqual(len(cites), 4)  # duplicate 片段0 deduped
+        grounded = by_key[("线性代数导引", 0)]
+        self.assertTrue(grounded["verified"])  # reads back via read_source
+        self.assertTrue(grounded["in_context"])
+        self.assertEqual(grounded["doc_id"], "d1")
+        foreign = by_key[("线性代数导引", 1)]
+        self.assertTrue(foreign["verified"])  # exists in the store…
+        self.assertFalse(foreign["in_context"])  # …but wasn't part of the context
+        missing = by_key[("线性代数导引", 7)]
+        self.assertFalse(missing["verified"])  # no such chunk to read
+        invented = by_key[("凭空文档", 0)]
+        self.assertFalse(invented["verified"])
+        self.assertIsNone(invented["doc_id"])
+        # read-back success lands the cited chunk in the session source list
+        self.assertTrue(any(s["doc_id"] == "d1" and s["chunk"] == 0 for s in mem.sources))
+
     async def test_decide_failure_ends_session_with_error(self):
         fake, _ = decisions(ValueError("bad json"), ValueError("bad json"))
         with patch("app.llm.complete_json", fake), patch("app.llm.complete", text_fake):
