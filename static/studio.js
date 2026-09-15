@@ -722,7 +722,22 @@ function handleAgentEvent(e) {
     if (e.tool === "answer_question" && e.ok && e.data && e.data.answer) {
       const box = document.createElement("div");
       box.className = "ag-explain";
-      box.innerHTML = `<h4>针对性讲解</h4><div class="report-content">${renderMd(e.data.answer)}</div>`;
+      let cites = "";
+      const cs = e.data.citations || [];
+      if (cs.length) {
+        cites = `<div class="ag-src-row">` + cs.map((c) => {
+          if (!c.verified)
+            return `<span class="src-chip warn">✕ ${esc(c.name)} 片段${c.chunk} · 未能在原文核对</span>`;
+          if (!c.in_context)
+            return `<button type="button" class="src-chip cite warn" data-doc="${esc(c.doc_id)}" data-chunk="${c.chunk}">△ ${esc(c.name)} 片段${c.chunk} · 不在本次依据中</button>`;
+          return `<button type="button" class="src-chip cite" data-doc="${esc(c.doc_id)}" data-chunk="${c.chunk}">✓ ${esc(c.name)} 片段${c.chunk}</button>`;
+        }).join("") + `</div>`;
+      }
+      box.innerHTML = `<h4>针对性讲解</h4><div class="report-content">${renderMd(e.data.answer)}</div>${cites}`;
+      box.querySelectorAll(".src-chip.cite").forEach((chip) => {
+        chip.addEventListener("click", () =>
+          openChunk({ doc_id: chip.dataset.doc, chunk: parseInt(chip.dataset.chunk, 10), name: chip.textContent }));
+      });
       $("#agBody").appendChild(box);
     }
   } else if (e.type === "awaiting_input") {

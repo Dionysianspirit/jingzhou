@@ -23,12 +23,15 @@ from app.tools import ToolContext, ToolResult, build_tools
 
 DECIDE_SYSTEM = (
     "你是「径舟」的自主学习调度器。学习者给出学习目标，你通过调用工具规划并执行多步骤学习任务，"
-    "典型流程：检索教材 → 提炼要点 → 出诊断题（交给学习者作答）→ 判分定位薄弱点 → 针对性讲解 → 总结。\n"
+    "典型流程：检索教材 → 提炼要点 → 出诊断题（交给学习者作答）→ 判分定位薄弱点 → 针对性讲解 → 总结；"
+    "判分后若仍有薄弱点且剩余步数充足，可只针对薄弱主题再出一轮小测并再判分，如此多轮直到步数用尽"
+    "或最近一轮全对，最后讲解剩余薄弱点并总结。\n"
     "规则：\n"
     "1. 每次只决定下一个动作，返回严格 JSON，不要输出任何其他内容。\n"
     '2. action 只能是工具列表中的工具名，或 "finish"。\n'
     "3. args 必须符合各工具参数要求；检索无命中或相关性低时不要编造，选择换关键词再检索一次或直接 finish。\n"
-    "4. reason 用一句简短中文说明为什么选这一步（面向用户，不暴露内部推理）；stage 用不超过 6 个字概括当前阶段。\n"
+    "4. 出题可多轮：第一轮全面诊断，其后每轮只针对尚未掌握的薄弱主题；最近一轮全对时不要再出题，转为讲解与总结。\n"
+    "5. reason 用一句简短中文说明为什么选这一步（面向用户，不暴露内部推理）；stage 用不超过 6 个字概括当前阶段。\n"
     '返回格式：{"stage":"...","reason":"...","action":"工具名或finish","args":{...}}'
 )
 
@@ -91,6 +94,10 @@ def _event_data(tool: str, result: ToolResult):
     return data
 
 
+def _quiz_rounds_done(mem: AgentMemory) -> int:
+    return sum(1 for s in mem.steps if s.tool == "create_quiz" and s.ok)
+
+
 def _decision_view(decision: dict) -> dict:
     return {
         "stage": str(decision.get("stage") or "")[:12],
@@ -116,7 +123,14 @@ def _state_prompt(mem: AgentMemory, tools: dict, doc_brief: str, max_steps: int)
         lines.append(
             "【薄弱点】\n" + "\n".join(f"- {w.topic}（{w.error_type}）" for w in mem.weaknesses[:8])
         )
-    quiz_state = "尚未出题" if not mem.quiz else "已判分" if mem.weaknesses else "已出题（历史）"
+    quiz_rounds = _quiz_rounds_done(mem)
+    if quiz_rounds:
+        recent = (
+            "最近一轮全对" if mem.last_quiz_wrong == 0 else f"最近一轮错 {mem.last_quiz_wrong} 题"
+        )
+        quiz_state = f"已出题 {quiz_rounds} 轮，累计薄弱点 {len(mem.weaknesses)} 处，{recent}"
+    else:
+        quiz_state = "尚未出题"
     lines.append(f"【测验状态】{quiz_state}")
     lines.append(f"【剩余步数】{max_steps - mem.step_count}")
     lines.append("请决定下一步，只输出 JSON。")
@@ -159,6 +173,39 @@ def _fail_circuit_open(mem: AgentMemory) -> str | None:
     if len(tail) >= 2 and not any(s.ok for s in tail[-2:]) and tail[-1].tool == tail[-2].tool:
         return f"工具 {tail[-1].tool} 连续失败"
     return None
+
+
+async def _rejection_events(
+    decision: dict,
+    mem: AgentMemory,
+    summary: str,
+    persist: AgentStore | None,
+    *,
+    sse_args: dict | None = None,
+) -> AsyncIterator[str]:
+    """Record a rejected action (forbidden / unknown / over cap) and emit its events."""
+    mem.record_step(decision["action"], decision["args"], decision["reason"], False, summary)
+    if persist:
+        persist.save(mem)
+    yield sse(
+        {
+            "type": "tool_call",
+            "step": mem.step_count,
+            "tool": decision["action"],
+            "args": sse_args if sse_args is not None else decision["args"],
+            "reason": decision["reason"],
+        }
+    )
+    yield sse(
+        {
+            "type": "tool_result",
+            "step": mem.step_count,
+            "tool": decision["action"],
+            "ok": False,
+            "summary": summary,
+        }
+    )
+    yield sse({"type": "state_update", **_state_view(mem)})
 
 
 def _fallback_summary(mem: AgentMemory) -> str:
@@ -290,101 +337,50 @@ async def run_session(
         if decision["action"] == "finish":
             break
 
+        if decision["action"] not in tools:
+            async for ev in _rejection_events(
+                decision,
+                mem,
+                f"调用了不存在的工具「{decision['action']}」，已拒绝。",
+                persist,
+            ):
+                yield ev
+            continue
+
         if decision["action"] == "analyze_mistakes":
             # genuine answers only arrive via /answers; the LLM must not
             # score fabricated ones
-            mem.record_step(
-                "analyze_mistakes",
-                decision["args"],
-                decision["reason"],
-                False,
+            async for ev in _rejection_events(
+                decision,
+                mem,
                 "已拒绝：判分由学习者提交答案自动触发，不能手动调用。",
-            )
-            if persist:
-                persist.save(mem)
-            yield sse(
-                {
-                    "type": "tool_call",
-                    "step": mem.step_count,
-                    "tool": "analyze_mistakes",
-                    "args": {},
-                    "reason": decision["reason"],
-                }
-            )
-            yield sse(
-                {
-                    "type": "tool_result",
-                    "step": mem.step_count,
-                    "tool": "analyze_mistakes",
-                    "ok": False,
-                    "summary": "已拒绝：判分由学习者提交答案自动触发。",
-                }
-            )
-            yield sse({"type": "state_update", **_state_view(mem)})
+                persist,
+                sse_args={},
+            ):
+                yield ev
             continue
 
-        tool = tools.get(decision["action"])
-        if tool is None:
-            mem.record_step(
-                decision["action"],
-                decision["args"],
-                decision["reason"],
-                False,
-                f"调用了不存在的工具「{decision['action']}」，已拒绝。",
-            )
-            if persist:
-                persist.save(mem)
-            yield sse(
-                {
-                    "type": "tool_call",
-                    "step": mem.step_count,
-                    "tool": decision["action"],
-                    "args": decision["args"],
-                    "reason": decision["reason"],
-                }
-            )
-            yield sse(
-                {
-                    "type": "tool_result",
-                    "step": mem.step_count,
-                    "tool": decision["action"],
-                    "ok": False,
-                    "summary": "调用了不存在的工具，已拒绝。",
-                }
-            )
-            yield sse({"type": "state_update", **_state_view(mem)})
+        if decision["action"] == "create_quiz" and mem.last_quiz_wrong == 0:
+            # spiral ends when the latest round was clean: no new weaknesses
+            async for ev in _rejection_events(
+                decision,
+                mem,
+                "已拒绝：最近一轮诊断全部正确，未新增薄弱点，无需再测；请转为讲解或总结。",
+                persist,
+            ):
+                yield ev
             continue
 
+        tool = tools[decision["action"]]
         call_key = (tool.name, json.dumps(decision["args"], sort_keys=True, ensure_ascii=False))
         if call_key in executed_ok:
-            mem.record_step(
-                tool.name,
-                decision["args"],
-                decision["reason"],
-                False,
+            async for ev in _rejection_events(
+                decision,
+                mem,
                 "重复调用被拦截：同样的工具与参数已成功执行过，请更换查询或换一个工具。",
-            )
-            if persist:
-                persist.save(mem)
-            yield sse(
-                {
-                    "type": "tool_call",
-                    "step": mem.step_count,
-                    "tool": tool.name,
-                    "args": decision["args"],
-                    "reason": decision["reason"],
-                }
-            )
-            yield sse(
-                {
-                    "type": "tool_result",
-                    "step": mem.step_count,
-                    "tool": tool.name,
-                    "ok": False,
-                    "summary": "重复调用被拦截（相同工具与参数）。",
-                }
-            )
-            yield sse({"type": "state_update", **_state_view(mem)})
+                persist,
+            ):
+                yield ev
             continue
 
         async for event in _run_action(decision, mem, ctx, tools, persist):

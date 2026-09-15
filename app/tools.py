@@ -8,6 +8,7 @@ DocStore, quiz/guide call app.features, mistake analysis is deterministic.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -177,6 +178,7 @@ async def analyze_mistakes(args: AnalyzeMistakesArgs, ctx: ToolContext) -> ToolR
             )
         per_question.append({"index": i, "correct": correct, "chosen": ans})
     ctx.memory.pending_answers = None
+    ctx.memory.last_quiz_wrong = len(quiz) - score
     return ToolResult(
         ok=True,
         summary=f"判分完成：{score}/{len(quiz)} 正确，累计薄弱点 {len(ctx.memory.weaknesses)} 个。",
@@ -187,6 +189,53 @@ async def analyze_mistakes(args: AnalyzeMistakesArgs, ctx: ToolContext) -> ToolR
             "weaknesses": [w.model_dump() for w in ctx.memory.weaknesses],
         },
     )
+
+
+CITATION_RE = re.compile(r"\[来源[:：]\s*(.+?)\s*片段\s*(\d+)\s*\]")
+
+
+async def verify_citations(answer: str, results: list[dict], ctx: ToolContext) -> list[dict]:
+    """Parse [来源: 文档名 片段N] markers and verify each one via read_source.
+
+    verified = the cited chunk reads back from the store (the same call the
+    read_source tool makes); in_context = the chunk was actually part of
+    the retrieved context handed to the LLM. A readable-but-foreign chunk
+    is real, but wasn't the basis of this answer.
+    """
+    by_name: dict[str, dict] = {}
+    for r in results:
+        entry = by_name.setdefault(r["doc_name"], {"doc_id": r["doc_id"], "chunks": set()})
+        entry["chunks"].add(r["chunk_idx"])
+
+    def resolve(name: str):
+        for doc_name, entry in by_name.items():
+            if name == doc_name or name in doc_name or doc_name in name:
+                return doc_name, entry
+        return None, None
+
+    seen: set[tuple[str, int]] = set()
+    citations = []
+    for name, chunk_str in CITATION_RE.findall(answer or ""):
+        chunk = int(chunk_str)
+        doc_name, entry = resolve(name)
+        key = (doc_name or name, chunk)
+        if key in seen:
+            continue
+        seen.add(key)
+        verified = False
+        if entry:
+            res = await read_source(ReadSourceArgs(doc_id=entry["doc_id"], chunk_idx=chunk), ctx)
+            verified = res.ok
+        citations.append(
+            {
+                "name": doc_name or name,
+                "doc_id": entry["doc_id"] if entry else None,
+                "chunk": chunk,
+                "verified": verified,
+                "in_context": bool(entry and chunk in entry["chunks"]),
+            }
+        )
+    return citations
 
 
 async def answer_question(args: AnswerQuestionArgs, ctx: ToolContext) -> ToolResult:
@@ -210,15 +259,25 @@ async def answer_question(args: AnswerQuestionArgs, ctx: ToolContext) -> ToolRes
         temperature=0.3,
         max_tokens=1536,
     )
+    citations = await verify_citations(answer, results, ctx)
+    unreadable = sum(1 for c in citations if not c["verified"])
+    foreign = sum(1 for c in citations if c["verified"] and not c["in_context"])
+    summary = f"已生成针对性讲解（{len(results)} 条来源支撑，引用 {len(citations)} 处"
+    if unreadable:
+        summary += f"，其中 {unreadable} 处未能在原文核对"
+    if foreign:
+        summary += f"，{foreign} 处不在本次依据中"
+    summary += "）。"
     return ToolResult(
         ok=True,
-        summary=f"已生成针对性讲解（{len(results)} 条来源支撑）。",
+        summary=summary,
         data={
             "answer": answer,
             "sources": [
                 {"doc_id": r["doc_id"], "name": r["doc_name"], "chunk": r["chunk_idx"]}
                 for r in results
             ],
+            "citations": citations,
         },
     )
 

@@ -163,3 +163,4 @@ textarea { flex: 1; border: var(--border); border-radius: var(--r-md); padding: 
 .ag-ses-meta { font-size: 12px; color: var(--ink-3); }
 .ag-resume-btn { flex: 0 0 auto; padding: 6px 14px; border: none; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; font-size: 13px; }
 .ag-resume-btn.ghost { background: var(--paper); color: var(--ink-2); border: var(--border); }
+.src-chip.warn { border-color: #A8705A; color: #A8705A; cursor: default; opacity: .85; }

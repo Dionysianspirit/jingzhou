@@ -95,9 +95,10 @@ flowchart TD
 - **工具白名单**（`app/tools.py`，每个都有 Pydantic 参数校验）：`search_knowledge`（语义检索）、`read_source`（片段回查）、`create_study_guide`（要点提炼）、`create_quiz`（诊断出题）、`analyze_mistakes`（判分与薄弱点归类）、`answer_question`（带出处的针对性讲解）
 - **受控保证**：硬性步数预算（默认 8，`AGENT_MAX_STEPS` 可调 6–10）；工具白名单外的调用直接拒绝；相同工具+参数的重复调用拦截；同一工具连续失败 2 次熔断结束；检索无命中/资料不存在时诚实终止而非编造；决策 JSON 解析失败重试一次后报错收场
 - **人在环上**：出题后暂停等学习者作答，答案只经 `POST /api/agent/{sid}/answers` 进入，Agent 无法自行编造答题结果（LLM 主动调用 `analyze_mistakes` 会被拒绝）
-- **可解释**：SSE 事件流 `planning / tool_call / tool_result / state_update / awaiting_input / final`，每步带一句面向用户的理由，不展示内部 chain-of-thought；测验下发给前端时会剥离正确答案，判分在服务端完成
+- **多轮诊断**：判分后若仍有薄弱点且步数充裕，Agent 可只针对薄弱主题再出一轮小测、再判分，如此多轮直到步数预算用尽或最近一轮全对（此时再出题会被确定性拒绝），薄弱点跨轮累计
+- **可解释**：SSE 事件流 `planning / tool_call / tool_result / state_update / awaiting_input / final`，每步带一句面向用户的理由，不展示内部 chain-of-thought；测验下发给前端时会剥离正确答案，判分在服务端完成；`answer_question` 讲解中的 `[来源: 文档名 片段N]` 引用会逐条自动经 `read_source` 回读原文核验，并区分三态——有据可查（可点开原文）、可读但不在本次依据中、未能在原文核对——杜绝空口讲解
 - **会话持久化**：`data/agent/<session_id>.json` 记录目标、步骤、发现、测验、薄弱点与出处，`GET /api/agent` 列出全部会话，「自主」页可一键恢复待作答会话（重建时间线后继续交卷）或回看已了结的总结
-- **限制**：单轮复习闭环（不含跨会话长期记忆与用户画像）；测验轮数受步数预算约束
+- **限制**：一次会话内的复习闭环（不含跨会话长期记忆与用户画像）；测验再测轮数受步数预算约束（每轮消耗出题与判分两步）
 
 ## API 一览
 
