@@ -573,17 +573,111 @@ async function runAgent() {
     await streamAgent("/api/agent", { goal: typed, doc_ids: [...selectedDocs] });
     return;
   }
-  $("#agBody").innerHTML = `
+  await renderAgentHome();
+}
+
+async function renderAgentHome() {
+  let sessions = [];
+  try {
+    const res = await fetch(API + "/api/agent");
+    if (res.ok) sessions = await res.json();
+  } catch (e) { sessions = []; }
+  const pending = sessions.filter((s) => s.status === "awaiting_answers");
+  const done = sessions.filter((s) => s.status === "finished").slice(0, 5);
+  let html = "";
+  if (pending.length) {
+    html += `<div class="ag-sessions"><h4>未完的学习</h4>` + pending.map((s) => `
+      <div class="ag-session" data-sid="${esc(s.session_id)}" data-mode="resume">
+        <div class="ag-ses-info">
+          <b>${esc(s.goal)}</b>
+          <span class="ag-ses-meta">${esc(s.stage)} · ${s.step_count} 步 · ${fmtTime(s.updated_at)}</span>
+        </div>
+        <button type="button" class="ag-resume-btn">继续作答</button>
+      </div>`).join("") + `</div>`;
+  }
+  html += `
     <div class="ag-goal-box">
       <textarea id="agGoal" rows="2" placeholder="例如：帮我复习前三章，重点找出我薄弱的知识"></textarea>
       <button type="button" id="agStart">开始学习</button>
     </div>`;
+  if (done.length) {
+    html += `<div class="ag-sessions"><h4>已了结的学习</h4>` + done.map((s) => `
+      <div class="ag-session done" data-sid="${esc(s.session_id)}" data-mode="review">
+        <div class="ag-ses-info">
+          <b>${esc(s.goal)}</b>
+          <span class="ag-ses-meta">${s.weakness_count} 个薄弱点 · ${fmtTime(s.updated_at)}</span>
+        </div>
+        <button type="button" class="ag-resume-btn ghost">回看总结</button>
+      </div>`).join("") + `</div>`;
+  }
+  $("#agBody").innerHTML = html;
   $("#agStart").addEventListener("click", async () => {
     const goal = $("#agGoal").value.trim();
     if (goal.length < 4) { toast("学习目标太短了"); return; }
     $("#agBody").innerHTML = '<div class="loading-spin">正在分析目标…</div>';
     await streamAgent("/api/agent", { goal, doc_ids: [...selectedDocs] });
   });
+  $("#agBody").querySelectorAll(".ag-session .ag-resume-btn").forEach((btn) => {
+    const row = btn.closest(".ag-session");
+    btn.addEventListener("click", () => {
+      if (row.dataset.mode === "resume") resumeAgentSession(row.dataset.sid);
+      else reviewAgentSession(row.dataset.sid);
+    });
+  });
+}
+
+function fmtTime(ts) {
+  const d = new Date((ts || 0) * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function agTimeline(steps, goal) {
+  const head = agStepEl("分析目标", goal);
+  head.classList.remove("pending"); head.classList.add("done");
+  (steps || []).forEach((s) => {
+    const row = agStepEl(`${s.step}. ${AG_TOOL_NAMES[s.tool] || s.tool}`, s.reason || "");
+    row.classList.remove("pending");
+    row.classList.add(s.ok ? "done" : "fail");
+    if (s.result_summary) {
+      const d = document.createElement("div");
+      d.className = "ag-sum";
+      d.textContent = s.result_summary;
+      row.querySelector(".ag-step-body").appendChild(d);
+    }
+  });
+}
+
+async function fetchAgentState(sid) {
+  const res = await fetch(API + "/api/agent/" + sid);
+  if (!res.ok) throw new Error("会话不存在或已失效");
+  return res.json();
+}
+
+async function resumeAgentSession(sid) {
+  $("#agBody").innerHTML = '<div class="loading-spin">正在恢复会话…</div>';
+  let st;
+  try { st = await fetchAgentState(sid); }
+  catch (e) { $("#agBody").innerHTML = `<p class="err-line">${esc(e.message)}</p>`; return; }
+  if (st.status !== "awaiting_answers" || !(st.quiz || []).length) {
+    $("#agBody").innerHTML = '<p class="empty-line">该会话已无法继续作答</p>';
+    return;
+  }
+  agSid = sid;
+  agTimeline(st.steps, st.goal);
+  agQuiz = st.quiz;
+  agAnswers = new Array(agQuiz.length).fill(-1);
+  renderAgentQuiz();
+}
+
+async function reviewAgentSession(sid) {
+  $("#agBody").innerHTML = '<div class="loading-spin">正在调出总结…</div>';
+  let st;
+  try { st = await fetchAgentState(sid); }
+  catch (e) { $("#agBody").innerHTML = `<p class="err-line">${esc(e.message)}</p>`; return; }
+  agSid = sid;
+  agTimeline(st.steps, st.goal);
+  renderAgentFinal({ summary: st.final_summary, weaknesses: st.weaknesses, sources: st.sources });
 }
 
 function agStepEl(title, reason) {
