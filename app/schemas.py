@@ -27,3 +27,12 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4096)
     doc_ids: list[str] = Field(min_length=1, max_length=50)
     k: int = Field(default=8, ge=1, le=20)
+
+
+class AgentStartRequest(BaseModel):
+    goal: str = Field(min_length=4, max_length=500)
+    doc_ids: list[str] = Field(min_length=1, max_length=50)
+
+
+class AgentAnswersRequest(BaseModel):
+    answers: list[int] = Field(min_length=1, max_length=30)

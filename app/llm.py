@@ -47,3 +47,26 @@ def parse_json(content: str) -> dict:
 def build_ctx(results: list[dict]) -> str:
     parts = [f"[{r['doc_name']} 片段{r['chunk_idx']}]\n{r['text']}" for r in results]
     return "\n\n---\n\n".join(parts)
+
+
+async def complete(
+    system: str, user: str, *, temperature: float = 0.3, max_tokens: int = 2048
+) -> str:
+    """Single-shot completion used by the agent (decision / explanation / summary)."""
+    resp = await llm.chat.completions.create(
+        model=model_name(),
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return resp.choices[0].message.content or ""
+
+
+async def complete_json(
+    system: str, user: str, *, temperature: float = 0.2, max_tokens: int = 512
+) -> dict:
+    content = await complete(system, user, temperature=temperature, max_tokens=max_tokens)
+    return parse_json(content)

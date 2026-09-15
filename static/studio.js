@@ -221,13 +221,14 @@ function failBox(res, fallback) {
 async function runFeature(name) {
   if (!selectedDocs.size || isStreaming) return;
   const titles = {
-    guide: "指南", flashcards: "笺卡", quiz: "考核",
+    agent: "自主学习", guide: "指南", flashcards: "笺卡", quiz: "考核",
     mindmap: "脉络图", report: "析报", table: "簿册", infographic: "览图",
   };
   openModal(titles[name] || name);
   modalBody.innerHTML = `<div class="loading-spin">正在准备${titles[name] || name}</div>`;
   const body = JSON.stringify({ doc_ids: [...selectedDocs], query: chatInput.value.trim(), count: 6 });
   try {
+    if (name === "agent") return await runAgent();
     if (name === "quiz") return await loadQuiz(body);
     if (name === "flashcards") return await loadFlashcards(body);
     if (name === "guide") return await loadGuide(body);
@@ -545,6 +546,186 @@ async function openChunk(s) {
 }
 
 function toast(msg) { headerInfo.textContent = msg; }
+
+// ---- 自主学习 Agent：目标 → 检索 → 诊断 → 判分 → 讲解 → 总结 ----
+const AG_TOOL_NAMES = {
+  search_knowledge: "检索教材",
+  read_source: "核对原文",
+  create_study_guide: "提炼要点",
+  create_quiz: "生成诊断",
+  analyze_mistakes: "判分分析",
+  answer_question: "针对性讲解",
+};
+let agSid = null;
+let agQuiz = [];
+let agAnswers = [];
+
+async function runAgent() {
+  agSid = null; agQuiz = []; agAnswers = [];
+  modalBody.innerHTML = `
+    <div class="ag-wrap">
+      <div class="ag-steps" id="agSteps"></div>
+      <div class="ag-body" id="agBody"></div>
+    </div>`;
+  const typed = chatInput.value.trim();
+  if (typed) {
+    $("#agBody").innerHTML = '<div class="loading-spin">正在分析目标…</div>';
+    await streamAgent("/api/agent", { goal: typed, doc_ids: [...selectedDocs] });
+    return;
+  }
+  $("#agBody").innerHTML = `
+    <div class="ag-goal-box">
+      <textarea id="agGoal" rows="2" placeholder="例如：帮我复习前三章，重点找出我薄弱的知识"></textarea>
+      <button type="button" id="agStart">开始学习</button>
+    </div>`;
+  $("#agStart").addEventListener("click", async () => {
+    const goal = $("#agGoal").value.trim();
+    if (goal.length < 4) { toast("学习目标太短了"); return; }
+    $("#agBody").innerHTML = '<div class="loading-spin">正在分析目标…</div>';
+    await streamAgent("/api/agent", { goal, doc_ids: [...selectedDocs] });
+  });
+}
+
+function agStepEl(title, reason) {
+  const el = document.createElement("div");
+  el.className = "ag-step pending";
+  el.innerHTML = `<span class="ag-dot"></span><div class="ag-step-body">
+    <div class="ag-step-title">${esc(title)}</div>
+    ${reason ? `<div class="ag-reason">${esc(reason)}</div>` : ""}</div>`;
+  $("#agSteps").appendChild(el);
+  return el;
+}
+
+function handleAgentEvent(e) {
+  const steps = $("#agSteps");
+  if (!steps) return;
+  const spin = $("#agBody .loading-spin");
+  if (spin) spin.remove();
+  if (e.type === "planning") {
+    agStepEl("分析目标", e.goal).classList.add("done");
+  } else if (e.type === "tool_call") {
+    const el = agStepEl(`${e.step}. ${AG_TOOL_NAMES[e.tool] || e.tool}`, e.reason);
+    el.dataset.step = e.step;
+  } else if (e.type === "tool_result") {
+    const el = steps.querySelector(`.ag-step[data-step="${e.step}"]`) || steps.lastElementChild;
+    if (el) {
+      el.classList.remove("pending");
+      el.classList.add(e.ok ? "done" : "fail");
+      if (e.summary) {
+        const s = document.createElement("div");
+        s.className = "ag-sum";
+        s.textContent = e.summary;
+        el.querySelector(".ag-step-body").appendChild(s);
+      }
+    }
+    if (e.tool === "create_study_guide" && e.ok && e.data && e.data.key_points) {
+      const box = document.createElement("div");
+      box.className = "ag-explain";
+      box.innerHTML = `<h4>要点提炼</h4><ul>` +
+        e.data.key_points.map((k) => `<li>${esc(k)}</li>`).join("") + `</ul>`;
+      $("#agBody").appendChild(box);
+    }
+    if (e.tool === "answer_question" && e.ok && e.data && e.data.answer) {
+      const box = document.createElement("div");
+      box.className = "ag-explain";
+      box.innerHTML = `<h4>针对性讲解</h4><div class="report-content">${renderMd(e.data.answer)}</div>`;
+      $("#agBody").appendChild(box);
+    }
+  } else if (e.type === "awaiting_input") {
+    agSid = e.session_id;
+    agQuiz = e.quiz || [];
+    agAnswers = new Array(agQuiz.length).fill(-1);
+    renderAgentQuiz();
+  } else if (e.type === "final") {
+    renderAgentFinal(e);
+  } else if (e.type === "error") {
+    agStepEl("出错", e.message).classList.add("fail");
+  }
+  modalBody.scrollTop = modalBody.scrollHeight;
+}
+
+async function streamAgent(url, body) {
+  let res;
+  try {
+    res = await fetch(API + url, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    handleAgentEvent({ type: "error", message: "舟楫失连，请再试" });
+    return;
+  }
+  if (!res.ok) {
+    let msg = `请求失败（${res.status}）`;
+    try { msg = (await res.json()).detail || msg; } catch (e2) {}
+    handleAgentEvent({ type: "error", message: msg });
+    return;
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const parts = buf.split("\n\n");
+    buf = parts.pop();
+    parts.forEach((p) => {
+      if (!p.startsWith("data: ") || p.includes("[DONE]")) return;
+      try { handleAgentEvent(JSON.parse(p.slice(6))); } catch (e) {}
+    });
+  }
+}
+
+function renderAgentQuiz() {
+  const letters = ["甲", "乙", "丙", "丁"];
+  const all = agAnswers.every((a) => a >= 0);
+  let html = `<div class="ag-quiz"><h4>诊断自测</h4>`;
+  html += agQuiz.map((q, qi) => `
+    <div class="quiz-q">
+      <div class="qq-title">${qi + 1}. ${esc(q.q)}</div>
+      <div class="qq-options">
+        ${(q.options || []).map((opt, oi) =>
+          `<div class="qq-opt${agAnswers[qi] === oi ? " qq-chosen" : ""}" data-qi="${qi}" data-oi="${oi}">
+            <span class="qq-letter">${letters[oi] || oi}</span>${esc(opt)}</div>`).join("")}
+      </div>
+    </div>`).join("");
+  html += `<div class="ag-submit-row"><button type="button" id="agSubmit"${all ? "" : " disabled"}>交卷，继续复习</button></div></div>`;
+  $("#agBody").innerHTML = html;
+  $("#agBody").querySelectorAll(".qq-opt").forEach((opt) => {
+    opt.addEventListener("click", () => {
+      agAnswers[parseInt(opt.dataset.qi, 10)] = parseInt(opt.dataset.oi, 10);
+      renderAgentQuiz();
+    });
+  });
+  $("#agSubmit").addEventListener("click", submitAgentAnswers);
+}
+
+function submitAgentAnswers() {
+  $("#agBody").innerHTML = '<div class="loading-spin">正在判分并安排针对性复习…</div>';
+  streamAgent(`/api/agent/${agSid}/answers`, { answers: agAnswers });
+}
+
+function renderAgentFinal(e) {
+  let html = '<div class="ag-final">';
+  if (e.weaknesses && e.weaknesses.length) {
+    html += `<h4>薄弱点（${e.weaknesses.length}）</h4>` + e.weaknesses.map((w) =>
+      `<div class="wa-block"><span class="wa-type ${esc(w.error_type || "概念混淆")}">${esc(w.error_type || "未分类")}</span>
+       <b>${esc(w.topic)}</b><div>${esc(w.reason || "")}</div></div>`).join("");
+  }
+  html += `<h4>复习总结</h4><div class="report-content">${renderMd(e.summary || "")}</div>`;
+  if (e.sources && e.sources.length) {
+    html += `<div class="ag-src-row">` + e.sources.map((s) =>
+      `<button type="button" class="src-chip" data-doc="${esc(s.doc_id)}" data-chunk="${s.chunk}">${esc(s.name)} 片段${s.chunk}</button>`).join("") + `</div>`;
+  }
+  html += "</div>";
+  $("#agBody").innerHTML = html;
+  $("#agBody").querySelectorAll(".ag-src-row .src-chip").forEach((chip) => {
+    chip.addEventListener("click", () =>
+      openChunk({ doc_id: chip.dataset.doc, chunk: parseInt(chip.dataset.chunk, 10), name: chip.textContent }));
+  });
+}
+
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => {
     if (c === "&") return "\u0026amp;";

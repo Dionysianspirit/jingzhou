@@ -20,4 +20,8 @@ OVERLAP_CHARS = int(os.environ.get("OVERLAP_CHARS", "512"))
 TOP_K = int(os.environ.get("TOP_K", "8"))
 MIN_MERGE_CHARS = 200
 
+# Agent: hard step budget clamped to 6..10 per spec.
+AGENT_MAX_STEPS = max(6, min(10, int(os.environ.get("AGENT_MAX_STEPS", "8"))))
+AGENT_DIR = DATA_DIR / "agent"
+
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")

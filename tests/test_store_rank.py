@@ -12,7 +12,8 @@ class RetrievalContractTests(unittest.TestCase):
         text = (Path(__file__).resolve().parents[1] / "data/sample/线性代数导引.txt").read_text(
             encoding="utf-8"
         )
-        chunks = chunk_text(text, chunk_chars=600, overlap_chars=80)
+        # sample is ~630 chars: 200-char chunks keep this contract meaningful
+        chunks = chunk_text(text, chunk_chars=200, overlap_chars=40)
         joined = "\n".join(chunks)
         self.assertIn("特征值", joined)
         self.assertIn("秩-零化度定理", joined)

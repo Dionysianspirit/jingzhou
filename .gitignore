@@ -5,6 +5,7 @@ __pycache__/
 *.pyo
 server.log
 data/store/
+data/agent/
 *.npy
 .DS_Store
 方案说明书/
