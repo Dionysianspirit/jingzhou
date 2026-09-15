@@ -128,3 +128,27 @@ textarea { flex: 1; border: var(--border); border-radius: var(--r-md); padding: 
 .fs-num { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; margin: 0 auto 6px; font-size: 12px; }
 
 @media (max-width: 900px) { body { flex-direction: column; } .sidebar { width: 100%; } .feat-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* ---- 自主学习 Agent ---- */
+.feat-agent { border-color: var(--amber-deep); }
+.ag-wrap { display: flex; flex-direction: column; gap: 16px; }
+.ag-steps { display: flex; flex-direction: column; gap: 2px; position: relative; }
+.ag-step { display: flex; gap: 10px; padding: 6px 0; }
+.ag-dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; background: var(--border); }
+.ag-step.done .ag-dot { background: #5A9E8A; }
+.ag-step.fail .ag-dot { background: #A8705A; }
+.ag-step.pending .ag-dot { background: var(--amber); animation: ag-pulse 1.2s ease-in-out infinite; }
+@keyframes ag-pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
+.ag-step-body { min-width: 0; }
+.ag-step-title { font-weight: 600; font-size: 14px; }
+.ag-reason { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+.ag-sum { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+.ag-body { border-top: var(--border); padding-top: 14px; }
+.ag-goal-box { display: flex; flex-direction: column; gap: 10px; }
+.ag-goal-box textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: var(--border); border-radius: 8px; font: inherit; resize: vertical; }
+.ag-submit-row { text-align: center; margin-top: 12px; }
+.ag-submit-row button:disabled { opacity: .5; cursor: not-allowed; }
+.ag-quiz h4, .ag-final h4, .ag-explain h4 { font-family: var(--serif); margin: 10px 0 8px; font-size: 15px; }
+.ag-explain { margin-top: 12px; }
+.ag-final .wa-block { margin-bottom: 8px; }
+.ag-src-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
