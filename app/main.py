@@ -24,7 +24,13 @@ from app.schemas import (
     RemoveRequest,
     SearchRequest,
 )
-from app.store import DocStore
+from app.store import DocStore, resolve_mode
+
+RANKING_EXPLAIN = {
+    "hybrid": "RRF：1/(60+语义名次) + 1/(60+关键词名次)，两路都靠前的片段排最前",
+    "dense": "仅按余弦相似度排序",
+    "bm25": "仅按 BM25 关键词得分排序",
+}
 
 store = DocStore()
 agent_store = AgentStore()
@@ -110,8 +116,9 @@ async def get_chunk(doc_id: str, chunk_idx: int):
 
 @app.post("/api/search")
 async def search(req: SearchRequest):
+    mode = resolve_mode(req.mode)
     try:
-        hits = await store.search(req.query, req.doc_ids, k=req.k)
+        hits = await store.search(req.query, req.doc_ids, k=req.k, mode=mode)
     except Exception as e:
         raise HTTPException(500, f"检索失败: {llm.safe_error(e)}") from e
     return {
@@ -119,8 +126,11 @@ async def search(req: SearchRequest):
         "k": req.k,
         "hits": hits,
         "explain": {
+            "mode": mode,
             "embed_model": EMBED_MODEL_NAME,
             "similarity": "cosine = dot(L2-normalized BGE vectors)",
+            "lexical": "BM25(k1=1.5, b=0.75)，中文按字二元组、拉丁与数字按词",
+            "fusion": RANKING_EXPLAIN[mode],
             "top_k": req.k,
         },
     }

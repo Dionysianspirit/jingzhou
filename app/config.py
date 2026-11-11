@@ -18,6 +18,8 @@ EMBED_MODEL_NAME = os.environ.get("EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
 CHUNK_CHARS = int(os.environ.get("CHUNK_CHARS", "2048"))
 OVERLAP_CHARS = int(os.environ.get("OVERLAP_CHARS", "512"))
 TOP_K = int(os.environ.get("TOP_K", "8"))
+# hybrid = BGE cosine fused with BM25 keywords; dense = cosine only; bm25 = keywords only
+RETRIEVAL_MODE = os.environ.get("RETRIEVAL_MODE", "hybrid").strip().lower()
 MIN_MERGE_CHARS = 200
 
 # Agent: hard step budget clamped to 6..10 per spec.

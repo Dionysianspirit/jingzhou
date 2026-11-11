@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,8 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4096)
     doc_ids: list[str] = Field(min_length=1, max_length=50)
     k: int = Field(default=8, ge=1, le=20)
+    # None = server default (RETRIEVAL_MODE); lets one query be compared across modes
+    mode: Literal["hybrid", "dense", "bm25"] | None = None
 
 
 class AgentStartRequest(BaseModel):
