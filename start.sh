@@ -79,5 +79,7 @@ if [[ "$KEY_STATUS" -eq 2 ]]; then
 fi
 
 PORT="${PORT:-8777}"
+# 默认只监听本机；需要局域网内其他设备访问时显式设置 HOST=0.0.0.0
+HOST="${HOST:-127.0.0.1}"
 say "启动 http://127.0.0.1:${PORT}"
-exec python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
+exec python -m uvicorn app.main:app --host "$HOST" --port "$PORT"

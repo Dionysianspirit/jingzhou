@@ -3,15 +3,19 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 
+from typing import Annotated
+
 from fastapi import FastAPI, HTTPException
+from fastapi import Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import agent, embeddings, features, llm
-from app.config import EMBED_MODEL_NAME, LLM_KEY, LLM_MODEL, ROOT, SAMPLE_DIR, TOP_K
+from app.config import CORS_ORIGINS, EMBED_MODEL_NAME, LLM_KEY, LLM_MODEL, ROOT, SAMPLE_DIR
 from app.memory import AgentMemory, AgentStore
 from app.schemas import (
+    SESSION_ID_PATTERN,
     AgentAnswersRequest,
     AgentStartRequest,
     ChatRequest,
@@ -38,13 +42,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="径舟", version="0.3.0", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# The bundled frontend is served from this same origin and needs no CORS.
+# Cross-origin access stays closed unless CORS_ORIGINS names who may call:
+# an open "*" would let any web page the user visits read their documents
+# and spend their LLM key through the local API.
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+SessionId = Annotated[str, PathParam(pattern=SESSION_ID_PATTERN)]
 
 
 def _require_llm():
@@ -78,7 +88,10 @@ async def index_doc(req: IndexRequest):
 
 @app.post("/api/remove")
 async def remove_doc(req: RemoveRequest):
-    await store.remove(req.doc_id)
+    try:
+        await store.remove(req.doc_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
     return {"status": "ok"}
 
 
@@ -180,6 +193,7 @@ async def chat(req: ChatRequest):
 
 @app.post("/api/flashcards")
 async def flashcards(req: FeatureRequest):
+    _require_llm()
     results = await store.search(req.query or "关键概念 核心知识点 定义 公式", req.doc_ids, k=15)
     ctx = llm.build_ctx(results)
     prompt = (
@@ -197,17 +211,17 @@ async def flashcards(req: FeatureRequest):
 
 @app.post("/api/quiz")
 async def quiz(req: FeatureRequest):
-    _require_llm()
+    if not llm.available():
+        # No key: the 识海偏误图 walkthrough still works on the bundled sample quiz.
+        return {
+            **features.SAMPLE_QUIZ,
+            "fallback": True,
+            "reason": "未配置 LLM，已载入示例考核",
+        }
     try:
         questions = await features.gen_quiz(store, req.doc_ids, req.query, req.count)
         return {"questions": questions}
-    except HTTPException as e:
-        if e.status_code == 503:
-            return {
-                **features.SAMPLE_QUIZ,
-                "fallback": True,
-                "reason": "未配置 LLM，已载入示例考核",
-            }
+    except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(500, f"测验生成失败: {llm.safe_error(e)}") from e
@@ -273,6 +287,7 @@ async def study_guide(req: FeatureRequest):
 
 @app.post("/api/infographic")
 async def infographic(req: FeatureRequest):
+    _require_llm()
     results = await store.search(req.query or "关键数据 对比 趋势 结论 要点", req.doc_ids, k=12)
     ctx = llm.build_ctx(results)
     try:
@@ -285,6 +300,7 @@ async def infographic(req: FeatureRequest):
 
 @app.post("/api/table")
 async def table(req: FeatureRequest):
+    _require_llm()
     results = await store.search(req.query or "对比 分类 条目 一览", req.doc_ids, k=12)
     ctx = llm.build_ctx(results)
     try:
@@ -322,7 +338,7 @@ async def agent_start(req: AgentStartRequest):
 
 
 @app.post("/api/agent/{session_id}/answers")
-async def agent_answers(session_id: str, req: AgentAnswersRequest):
+async def agent_answers(session_id: SessionId, req: AgentAnswersRequest):
     _require_llm()
     mem = agent_store.load(session_id)
     if mem is None:
@@ -349,7 +365,7 @@ async def agent_list():
 
 
 @app.get("/api/agent/{session_id}")
-async def agent_state(session_id: str):
+async def agent_state(session_id: SessionId):
     mem = agent_store.load(session_id)
     if mem is None:
         raise HTTPException(404, "学习会话不存在")

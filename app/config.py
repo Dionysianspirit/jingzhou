@@ -24,4 +24,10 @@ MIN_MERGE_CHARS = 200
 AGENT_MAX_STEPS = max(6, min(10, int(os.environ.get("AGENT_MAX_STEPS", "8"))))
 AGENT_DIR = DATA_DIR / "agent"
 
+# Network exposure. The service has no login, so it listens on loopback only
+# and accepts no cross-origin callers unless these are set explicitly.
+HOST = os.environ.get("HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8777"))
+CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")

@@ -1,8 +1,17 @@
+from typing import Annotated
+
 from pydantic import BaseModel, Field
+
+# Ids that become directory or file names on disk. Anything outside this
+# alphabet (path separators, dots, absolute paths) is rejected before it can
+# reach the filesystem.
+DOC_ID_PATTERN = r"^[a-zA-Z0-9_-]+$"
+DocId = Annotated[str, Field(min_length=1, max_length=64, pattern=DOC_ID_PATTERN)]
+SESSION_ID_PATTERN = r"^[a-zA-Z0-9]{1,32}$"
 
 
 class IndexRequest(BaseModel):
-    doc_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    doc_id: DocId
     name: str = Field(min_length=1, max_length=256)
     text: str = Field(min_length=1, max_length=10_000_000)
 
@@ -14,7 +23,7 @@ class ChatRequest(BaseModel):
 
 
 class RemoveRequest(BaseModel):
-    doc_id: str
+    doc_id: DocId
 
 
 class FeatureRequest(BaseModel):

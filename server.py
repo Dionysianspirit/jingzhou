@@ -1,11 +1,13 @@
-"""Backward-compatible entrypoint. Prefer: uvicorn app.main:app --host 0.0.0.0 --port 8777"""
+"""Backward-compatible entrypoint. Prefer: uvicorn app.main:app --port 8777
 
-import os
+Listens on 127.0.0.1 by default: the service has no login, so exposing it to
+the whole network would let anyone nearby read the indexed documents and spend
+the configured LLM key. Set HOST=0.0.0.0 to opt in to LAN access.
+"""
 
 import uvicorn
 
-from app.main import app
+from app.config import HOST, PORT
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8777"))
-    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("app.main:app", host=HOST, port=PORT, reload=False)

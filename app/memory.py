@@ -7,6 +7,7 @@ quiz, weaknesses and sources. No cross-session user profiling.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -14,6 +15,9 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from app.config import AGENT_DIR
+from app.schemas import SESSION_ID_PATTERN
+
+_SAFE_SESSION_ID = re.compile(SESSION_ID_PATTERN)
 
 
 class AgentStep(BaseModel):
@@ -102,6 +106,9 @@ class AgentStore:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _path(self, session_id: str) -> Path:
+        # the id is a file name: never let one carry a path out of data/agent/
+        if not isinstance(session_id, str) or _SAFE_SESSION_ID.fullmatch(session_id) is None:
+            raise ValueError("非法的会话编号")
         return self.root / f"{session_id}.json"
 
     def save(self, mem: AgentMemory) -> None:
@@ -112,7 +119,10 @@ class AgentStore:
         )
 
     def load(self, session_id: str) -> AgentMemory | None:
-        path = self._path(session_id)
+        try:
+            path = self._path(session_id)
+        except ValueError:
+            return None
         if not path.exists():
             return None
         try:

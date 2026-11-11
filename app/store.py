@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,26 @@ import numpy as np
 from app import embeddings
 from app.chunking import chunk_text
 from app.config import CHUNK_CHARS, MIN_MERGE_CHARS, OVERLAP_CHARS, STORE_DIR, TOP_K
+from app.schemas import DOC_ID_PATTERN
+
+_SAFE_DOC_ID = re.compile(DOC_ID_PATTERN)
+MAX_DOC_ID_CHARS = 64
+
+
+def safe_doc_id(doc_id: str) -> str:
+    """A doc id becomes a directory name, so it must never carry a path.
+
+    The API schema already rejects unsafe ids; this is the second lock on
+    the same door, so no caller can make the store touch a path outside
+    its own root.
+    """
+    if (
+        not isinstance(doc_id, str)
+        or not 1 <= len(doc_id) <= MAX_DOC_ID_CHARS
+        or _SAFE_DOC_ID.fullmatch(doc_id) is None
+    ):
+        raise ValueError("非法的文档编号：只允许字母、数字、下划线与连字符")
+    return doc_id
 
 
 class DocStore:
@@ -22,13 +43,15 @@ class DocStore:
         self.lock = asyncio.Lock()
 
     def _doc_dir(self, doc_id: str) -> Path:
-        return self.root / doc_id
+        return self.root / safe_doc_id(doc_id)
 
     def load_disk(self) -> int:
         loaded = 0
         if not self.root.exists():
             return 0
         for child in self.root.iterdir():
+            if _SAFE_DOC_ID.fullmatch(child.name) is None:
+                continue
             meta = child / "meta.json"
             chunks_path = child / "chunks.json"
             npy = child / "embeddings.npy"
@@ -66,6 +89,7 @@ class DocStore:
         np.save(folder / "embeddings.npy", self.matrices[doc_id])
 
     async def add(self, doc_id: str, name: str, text: str) -> int:
+        safe_doc_id(doc_id)
         chunks = chunk_text(text, CHUNK_CHARS, OVERLAP_CHARS, MIN_MERGE_CHARS)
         if not chunks:
             raise ValueError("No extractable text")
@@ -78,11 +102,11 @@ class DocStore:
         return len(chunks)
 
     async def remove(self, doc_id: str) -> None:
+        folder = self._doc_dir(doc_id)
         async with self.lock:
             self.docs.pop(doc_id, None)
             self.matrices.pop(doc_id, None)
-        folder = self._doc_dir(doc_id)
-        if folder.exists():
+        if folder.is_dir():
             for p in folder.iterdir():
                 p.unlink(missing_ok=True)
             folder.rmdir()
