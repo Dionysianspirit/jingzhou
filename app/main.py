@@ -5,22 +5,24 @@ import base64
 import binascii
 import json
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 
 from typing import Annotated
 
 from fastapi import FastAPI, HTTPException
 from fastapi import Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import agent, embeddings, extract, features, llm
+from app import agent, anki, embeddings, extract, features, llm
 from app.config import CORS_ORIGINS, EMBED_MODEL_NAME, LLM_KEY, LLM_MODEL, ROOT, SAMPLE_DIR
 from app.conversations import Conversation, ConversationStore, standalone_query
 from app.memory import AgentMemory, AgentStore
 from app.schemas import (
     SESSION_ID_PATTERN,
     AgentAnswersRequest,
+    AnkiExportRequest,
     AgentStartRequest,
     ChatRequest,
     FeatureRequest,
@@ -305,6 +307,38 @@ async def flashcards(req: FeatureRequest):
         return await features.feature_json(prompt, 0.5, 2048)
     except Exception as e:
         raise HTTPException(500, f"闪卡生成失败: {llm.safe_error(e)}") from e
+
+
+@app.post("/api/flashcards/export")
+async def export_flashcards(req: AnkiExportRequest):
+    """Turn cards the learner already has into a file Anki imports.
+
+    Needs neither the LLM nor the document store: the cards travel in the request.
+    """
+    cards = [card.model_dump() for card in req.cards]
+    count = len(anki.clean_cards(cards))
+    if not count:
+        raise HTTPException(400, "没有可导出的笺卡（问题与答案都不能为空）")
+    deck = anki.clean_deck(req.deck)
+    if req.format == "tsv":
+        body = anki.to_tsv(cards, deck).encode("utf-8")
+        media_type, ext = "text/tab-separated-values; charset=utf-8", "txt"
+    else:
+        body = await asyncio.to_thread(anki.to_apkg, cards, deck)
+        media_type, ext = "application/octet-stream", "apkg"
+    filename = "".join("-" if ch in '\\/:*?"<>|' else ch for ch in deck).strip("-. ") or "jingzhou"
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={
+            # ASCII fallback first; the UTF-8 form carries the real deck name
+            "Content-Disposition": (
+                f"attachment; filename=\"jingzhou.{ext}\"; "
+                f"filename*=UTF-8''{quote(filename)}.{ext}"
+            ),
+            "X-Card-Count": str(count),
+        },
+    )
 
 
 @app.post("/api/quiz")

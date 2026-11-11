@@ -62,3 +62,15 @@ class AgentStartRequest(BaseModel):
 
 class AgentAnswersRequest(BaseModel):
     answers: list[int] = Field(min_length=1, max_length=30)
+
+
+class Flashcard(BaseModel):
+    q: str = Field(max_length=4000)
+    a: str = Field(max_length=8000)
+
+
+class AnkiExportRequest(BaseModel):
+    cards: list[Flashcard] = Field(min_length=1, max_length=500)
+    deck: str = Field(default="径舟", max_length=80)
+    # apkg = Anki package (double-click to import); tsv = Anki's text import format
+    format: Literal["apkg", "tsv"] = "apkg"
