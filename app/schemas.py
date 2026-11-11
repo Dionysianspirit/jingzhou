@@ -16,6 +16,16 @@ class IndexRequest(BaseModel):
     text: str = Field(min_length=1, max_length=10_000_000)
 
 
+class IndexFileRequest(BaseModel):
+    """A binary document (DOCX / EPUB), base64-encoded, to extract and index."""
+
+    doc_id: DocId
+    name: str = Field(min_length=1, max_length=256)
+    filename: str = Field(min_length=1, max_length=256)
+    # ~30 MB of file once decoded; the archive caps in app/extract.py apply on top
+    data_b64: str = Field(min_length=1, max_length=40_000_000)
+
+
 class ChatRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4096)
     doc_ids: list[str] = Field(min_length=1, max_length=50)

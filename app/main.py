@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
 import json
 from contextlib import asynccontextmanager
 
@@ -11,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import agent, embeddings, features, llm
+from app import agent, embeddings, extract, features, llm
 from app.config import CORS_ORIGINS, EMBED_MODEL_NAME, LLM_KEY, LLM_MODEL, ROOT, SAMPLE_DIR
 from app.conversations import Conversation, ConversationStore, standalone_query
 from app.memory import AgentMemory, AgentStore
@@ -21,6 +24,7 @@ from app.schemas import (
     AgentStartRequest,
     ChatRequest,
     FeatureRequest,
+    IndexFileRequest,
     IndexRequest,
     RemoveRequest,
     SearchRequest,
@@ -96,6 +100,35 @@ async def index_doc(req: IndexRequest):
     except Exception as e:
         raise HTTPException(500, f"索引失败: {llm.safe_error(e)}") from e
     return {"status": "ok", "doc_id": req.doc_id, "chunks": n}
+
+
+@app.post("/api/index-file")
+async def index_file(req: IndexFileRequest):
+    """Extract text from a DOCX / EPUB on this machine, then index it like any text."""
+    try:
+        data = base64.b64decode(req.data_b64, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise HTTPException(400, "文件内容不是有效的 base64") from e
+    try:
+        # parsing a large archive is CPU work: keep it off the event loop
+        text = await asyncio.to_thread(extract.extract_text, req.filename, data)
+    except extract.ExtractError as e:
+        raise HTTPException(400, str(e)) from e
+    if not text.strip():
+        raise HTTPException(400, "未能从文件中提取到文字（可能是纯图片或扫描件）")
+    try:
+        n = await store.add(req.doc_id, req.name, text)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, f"索引失败: {llm.safe_error(e)}") from e
+    return {
+        "status": "ok",
+        "doc_id": req.doc_id,
+        "chunks": n,
+        "chars": len(text),
+        "format": extract.extension_of(req.filename).lstrip("."),
+    }
 
 
 @app.post("/api/remove")
