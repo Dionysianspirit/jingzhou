@@ -20,6 +20,11 @@ class ChatRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4096)
     doc_ids: list[str] = Field(min_length=1, max_length=50)
     system: str = Field(default="", max_length=4096)
+    # Multi-turn: pass the id of a stored conversation to continue it, or
+    # remember=true to start one. With neither, the call is a stateless
+    # single question exactly as before.
+    conversation_id: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
+    remember: bool = False
 
 
 class RemoveRequest(BaseModel):

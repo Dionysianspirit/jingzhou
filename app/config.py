@@ -25,6 +25,7 @@ MIN_MERGE_CHARS = 200
 # Agent: hard step budget clamped to 6..10 per spec.
 AGENT_MAX_STEPS = max(6, min(10, int(os.environ.get("AGENT_MAX_STEPS", "8"))))
 AGENT_DIR = DATA_DIR / "agent"
+CHAT_DIR = DATA_DIR / "chat"
 
 # Network exposure. The service has no login, so it listens on loopback only
 # and accepts no cross-origin callers unless these are set explicitly.

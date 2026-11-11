@@ -6,6 +6,7 @@ __pycache__/
 server.log
 data/store/
 data/agent/
+data/chat/
 *.npy
 .DS_Store
 方案说明书/

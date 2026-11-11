@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import agent, embeddings, features, llm
 from app.config import CORS_ORIGINS, EMBED_MODEL_NAME, LLM_KEY, LLM_MODEL, ROOT, SAMPLE_DIR
+from app.conversations import Conversation, ConversationStore, standalone_query
 from app.memory import AgentMemory, AgentStore
 from app.schemas import (
     SESSION_ID_PATTERN,
@@ -34,6 +35,7 @@ RANKING_EXPLAIN = {
 
 store = DocStore()
 agent_store = AgentStore()
+chat_store = ConversationStore()
 
 
 @asynccontextmanager
@@ -61,6 +63,10 @@ if CORS_ORIGINS:
     )
 
 SessionId = Annotated[str, PathParam(pattern=SESSION_ID_PATTERN)]
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 def _require_llm():
@@ -141,12 +147,23 @@ async def chat(req: ChatRequest):
     _require_llm()
     if not req.query.strip():
         raise HTTPException(400, "Empty query")
+    conv: Conversation | None = None
+    if req.conversation_id:
+        conv = chat_store.load(req.conversation_id)
+        if conv is None:
+            raise HTTPException(404, "对话不存在或已删除")
+    elif req.remember:
+        conv = Conversation()
+    # A follow-up is searched as a standalone question, not as typed.
+    search_query, rewritten = await standalone_query(conv, req.query)
     try:
-        results = await store.search(req.query, req.doc_ids)
+        results = await store.search(search_query, req.doc_ids)
     except Exception as e:
         raise HTTPException(500, f"检索失败: {llm.safe_error(e)}") from e
+    history = conv.history_messages() if conv else []
 
     async def generate():
+        yield _sse({"search_query": search_query, "rewritten": rewritten})
         context = llm.build_ctx(results)
         persona = req.system.strip() or (
             "你是径舟书斋的伴读书童「小舟」，性情温润，言辞典雅，善用中国古典文风。"
@@ -161,11 +178,15 @@ async def chat(req: ChatRequest):
             "4. 在回答后，主动提供「相关知识点回顾」和「下一步研读建议」。\n"
             "5. 优先提取文档中的核心概念、公式和推导过程。"
         )
+        if history:
+            system += "\n6. 对话历史只用于理解追问的指代与省略；事实仍须出自本轮提供的文档片段。"
+        answer = ""
         try:
             stream = await llm.llm.chat.completions.create(
                 model=llm.model_name(),
                 messages=[
                     {"role": "system", "content": system},
+                    *history,
                     {
                         "role": "user",
                         "content": f"文档内容：\n\n{context}\n\n用户问题：{req.query}",
@@ -180,7 +201,8 @@ async def chat(req: ChatRequest):
                     continue
                 delta = chunk.choices[0].delta
                 if delta.content:
-                    yield f"data: {json.dumps({'text': delta.content}, ensure_ascii=False)}\n\n"
+                    answer += delta.content
+                    yield _sse({"text": delta.content})
             sources = [
                 {
                     "doc_id": r["doc_id"],
@@ -193,12 +215,45 @@ async def chat(req: ChatRequest):
                 }
                 for r in results
             ]
-            yield f"data: {json.dumps({'sources': sources}, ensure_ascii=False)}\n\n"
+            yield _sse({"sources": sources})
+            if conv is not None and answer.strip():
+                # Stored only once a turn has really been answered, so a failed
+                # first turn leaves no empty conversation behind.
+                current = chat_store.load(conv.conversation_id) or conv
+                current.add_exchange(
+                    req.query.strip(),
+                    answer,
+                    sources=sources,
+                    search_query=search_query,
+                    doc_ids=req.doc_ids,
+                )
+                chat_store.save(current)
+                yield _sse({"conversation_id": current.conversation_id, "title": current.title})
         except Exception as e:
-            yield f"data: {json.dumps({'error': llm.safe_error(e)}, ensure_ascii=False)}\n\n"
+            yield _sse({"error": llm.safe_error(e)})
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/api/conversations")
+async def list_conversations():
+    return chat_store.list_conversations()[:50]
+
+
+@app.get("/api/conversations/{conversation_id}")
+async def get_conversation(conversation_id: SessionId):
+    conv = chat_store.load(conversation_id)
+    if conv is None:
+        raise HTTPException(404, "对话不存在或已删除")
+    return conv.model_dump()
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: SessionId):
+    if not chat_store.delete(conversation_id):
+        raise HTTPException(404, "对话不存在或已删除")
+    return {"status": "ok"}
 
 
 @app.post("/api/flashcards")
