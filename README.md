@@ -2,11 +2,13 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.3.0-009688.svg)](https://fastapi.tiangolo.com)
+[![Version](https://img.shields.io/badge/version-0.4.0-009688.svg)](#路线展望)
 
 > 书山有径，学海泛舟。
 
 **径舟** 是一个面向中文教材的多文档 RAG 学习助手：资料投进书斋，系统用 BGE 中文向量做检索，大模型**只根据命中片段**回答，并一键生成闪卡、测验、思维导图、学习指南等学习材料。v0.3 起在之上加了一层**单 Agent 调度**——用户不再逐个点功能，而是给出学习目标（如「帮我复习前三章，重点找出我薄弱的知识」），由 Agent 自主决定检索、出题、判分、讲解与总结的顺序，完成一个多步骤学习闭环。产品形态对标 NotebookLM / 腾讯 IMA——「资料在先，回答必须带出处」。
+
+v0.4 把检索从纯向量升级为 **BM25 关键词 + 向量语义的混合检索**，并补齐了路线图上剩下的三项：**多轮对话与会话历史**、**DOCX / EPUB 投卷**、**笺卡导出 Anki**。
 
 与黑盒包装的 RAG 应用不同，径舟把检索过程做成透明可验证的：切块、编码、相似度、落盘、引用回查各自成模块，每次命中都带分数与入选原因，回答里的来源笺可以逐条点开原文核对。
 
@@ -22,28 +24,33 @@ cd jingzhou
 
 启动脚本会自动建虚拟环境、装依赖，并在首次运行时引导你填入 API Key（也可手动 `cp .env.example .env` 填写）。服务就绪后打开 <http://127.0.0.1:8777>：
 
-1. 左侧点「载入示例教材《线性代数导引》」，或直接拖入自己的 PDF / TXT / MD
+1. 左侧点「载入示例教材《线性代数导引》」，或直接拖入自己的 PDF / DOCX / EPUB / TXT / MD
 2. 选中卷册，提问，例如「秩-零化度定理在说什么？」
-3. 点回答下方的来源笺，核对命中的原文片段与检索分数
-4. 顶栏「指南」一键生成导读、要点与思考题；关掉进程再开，卷册仍在（向量已落盘）
-5. 顶栏「自主」进入 Agent 模式：输入学习目标（或在输入框写好再点），看着它 检索 → 出诊断题 → 等你作答 → 判分找薄弱点 → 针对性讲解 → 总结
+3. 点回答下方的来源笺，核对命中的原文片段，以及这一名次是怎么来的（语义第几、关键词第几）
+4. 接着追问「那它和齐次方程有什么关系？」——回答下方会显示实际拿去检索的「检索问句」；问过的话留在左下「对话」区，重启后仍可点开接着聊
+5. 顶栏「指南」一键生成导读、要点与思考题；「笺卡」生成后可「导出 Anki 卡包」
+6. 顶栏「自主」进入 Agent 模式：输入学习目标（或在输入框写好再点），看着它 检索 → 出诊断题 → 等你作答 → 判分找薄弱点 → 针对性讲解 → 总结
 
-另有一个最小化的 API 走查页在 `/demo.html`，可用来逐接口验证检索与生成链路。
+另有一个最小化的 API 走查页在 `/demo.html`，可切换融合 / 语义 / 关键词三种排序，逐接口验证检索与生成链路。
 
-运行测试：
+运行测试（不需要嵌入模型，也不需要 Key）：
 
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+装上可选的 `anki` 包（`pip install anki`）后，测试会额外用 Anki 官方导入器把导出的文件真实导入一遍；没装时这两项自动跳过。
 
 ## 功能特性
 
 | 能力 | 说明 |
 | --- | --- |
 | 🧭 自主学习 Agent | 给一句学习目标，Agent 自主调度检索/出题/判分/讲解/总结，SSE 流式回报每步动作与理由，测验答案在服务端判分 |
-| 💬 伴读问答 | 多文档语义检索 + SSE 流式回答，引用格式 `[来源: 文档名 片段N]`，书童「小舟」人设可自定义 |
-| 📜 拖拽投卷 | PDF 由浏览器端 pdf.js 解析取字，TXT / MD 直传，全程文本不出本机（仅命中片段送 LLM） |
-| 🔍 可解释检索 | 独立 `/api/search` 接口，每个命中块返回余弦分数、排名、字词重叠与一句话入选原因 |
+| 💬 伴读问答 | 多文档混合检索 + SSE 流式回答，引用格式 `[来源: 文档名 片段N]`，书童「小舟」人设可自定义 |
+| 🗂 多轮对话 | 追问先被改写成独立问句再检索，改写结果当场可见；对话落盘，可恢复、可删除 |
+| 📜 拖拽投卷 | PDF 由浏览器端 pdf.js 解析取字；DOCX / EPUB 由本机服务用标准库解析；TXT / MD 自动识别 UTF-8 / GBK。全程文本不出本机（仅命中片段送 LLM） |
+| 🔍 可解释检索 | BM25 关键词 + BGE 向量做 RRF 融合；每个命中块返回余弦分数、两路名次、字词重叠与一句话入选原因，三种排序可逐次切换对比 |
+| 🃏 导出 Anki | 笺卡导出为 `.apkg`（双击导入）或 Anki 文本格式；同一批卡片重复导入是更新而不是重复添加 |
 | 📌 点击溯源 | 来源笺点开即原文（`/api/docs/{id}/chunks/{i}`），引用可验证而非模型编造 |
 | 💾 向量持久化 | 索引落盘 `data/store/`，重启自动读回，文档不必重传 |
 | 📖 学习工具组 | 指南（导读/要点/易错/思考题）、笺卡翻转、考核（识海偏误图 + 研思足迹 + 四类错因）、脉络、析报、簿册、览图 |
@@ -59,21 +66,33 @@ flowchart LR
         C --> D[store.py<br>内存矩阵 + 落盘<br>meta.json / chunks.json / embeddings.npy]
     end
     subgraph 问答
-        E[提问] --> F[问句编码]
-        F --> G[score = chunk · query<br>归一化后即余弦]
-        G --> H[Top-K + rank / overlap / why]
+        E[提问] --> E2[追问？先改写成独立问句]
+        E2 --> F[问句编码]
+        F --> G[语义：score = chunk · query<br>归一化后即余弦]
+        E2 --> G2[关键词：BM25<br>中文字二元组 · 拉丁按词]
+        G --> R[RRF 融合<br>1/(60+语义名次) + 1/(60+关键词名次)]
+        G2 --> R
+        R --> H[Top-K + 两路名次 / overlap / why]
         H --> I[仅命中块进 LLM 上下文]
         I --> J[SSE 流式回答 + 可回查来源]
     end
 ```
 
-三个关键设计：
+几个关键设计：
 
 1. **切块不一刀切**：先按空行拼段，超长段在 2048 字内找最近句号切开并回带 512 字重叠，短于 200 字的尾巴并回上一块，避免无语义碎片向量。
 2. **余弦即点积**：`normalize_embeddings=True` 使向量落在单位球上，`np.dot` 结果就是余弦相似度，分数跨查询可直接比较。
 3. **生成被检索约束**：提示词禁止外部知识，未命中要求坦承「遍览全卷，未有所获」；引用带 `doc_id + chunk_idx`，前端可回查原文。
+4. **语义与关键词互补**：向量擅长「说的是不是一回事」，不擅长「有没有这个词」——定理名、公式名、缩写正是教材检索里最常问的。BM25 补上这一侧，两路按名次做 RRF 融合（不比较两种不可比的分数）。`score` 字段始终是余弦，另给 `dense_rank / bm25_score / bm25_rank / fused_score`，`RETRIEVAL_MODE=dense` 可一键回到纯向量。
+5. **追问先改写再检索**：「那它呢？」直接拿去编码，向量指向不了任何东西。所以追问先结合历史改写成独立问句，再检索；模型回答时能看到最近几轮对话，但被要求事实只出自本轮命中的片段。
 
 更多设计细节见 [INTERVIEW.md](INTERVIEW.md)。
+
+## 多轮对话、更多格式与 Anki（v0.4）
+
+- **多轮对话**：对话按文件落盘到 `data/chat/`，只在一轮真正答完后写入。每轮只把最近 6 条历史（按长度截断）带给模型；改写失败时退回「上一问 + 追问」拼接，不会拿着一句「它」去检索。`/api/chat` 不传 `conversation_id` / `remember` 时行为与旧版完全一致。
+- **DOCX / EPUB**：两种格式都是 XML 压缩包，`app/extract.py` 只用标准库解析，没有新增依赖。DOCX 保留段落、表格与公式文本，丢弃修订中已删除的文字；EPUB 按 spine 的阅读顺序取章节，跳过目录页、脚本与样式。压缩包逐成员流式读取并设大小上限，不落盘解压。
+- **导出 Anki**：`.apkg` 自带笔记类型与牌组（按卷册名建子牌组 `径舟::卷册名`）。每张卡的 GUID 由牌组名与问题派生，所以改完再导出、再导入，Anki 里是原地更新，复习记录保留。
 
 ## 自主学习 Agent（v0.3）
 
@@ -106,13 +125,17 @@ flowchart TD
 | --- | --- | --- |
 | `GET` | `/api/health` | 健康检查：嵌入模型 / LLM 就绪状态、文档数 |
 | `POST` | `/api/index` | 索引文档（doc_id + 纯文本，上限 10MB） |
+| `POST` | `/api/index-file` | 索引 DOCX / EPUB（base64 文件，本机解析后走同一条索引链路） |
 | `POST` | `/api/remove` | 删除文档（内存与磁盘同步清理） |
 | `GET` | `/api/docs` | 已索引文档列表 |
 | `GET` | `/api/docs/{doc_id}/chunks/{chunk_idx}` | 取回指定片段原文（溯源回查） |
-| `POST` | `/api/search` | 可解释检索，返回 score / rank / overlap / why |
-| `POST` | `/api/chat` | RAG 问答（SSE 流式，含来源与解释字段） |
+| `POST` | `/api/search` | 可解释检索，返回 score / rank / overlap / why 与两路名次；可传 `mode`: hybrid / dense / bm25 |
+| `POST` | `/api/chat` | RAG 问答（SSE 流式，含来源与解释字段）；`remember` 开启新对话，`conversation_id` 接着聊 |
+| `GET` | `/api/conversations` | 对话摘要列表（新的在前） |
+| `GET` · `DELETE` | `/api/conversations/{id}` | 取回一段对话的全部轮次与来源 / 删除 |
 | `POST` | `/api/study-guide` | 生成学习指南（JSON，附来源） |
 | `POST` | `/api/flashcards` · `/api/quiz` | 笺卡、考核（考核含错因分类） |
+| `POST` | `/api/flashcards/export` | 把笺卡导出为 Anki 文件（`format`: apkg / tsv；不依赖 LLM） |
 | `POST` | `/api/mindmap` · `/api/report` | 脉络（Markdown）、析报（SSE） |
 | `POST` | `/api/infographic` · `/api/table` | 览图数据、簿册（JSON） |
 | `GET` | `/api/agent` | 会话摘要列表（待作答可恢复、已了结可回看） |
@@ -131,10 +154,12 @@ flowchart TD
 | `LLM_BASE_URL` | `https://api.openai.com/v1` | 任意 OpenAI 兼容端点 |
 | `LLM_MODEL` | `gpt-4o` | 对话模型 |
 | `EMBED_MODEL` | `BAAI/bge-small-zh-v1.5` | 本地嵌入模型（默认走 hf-mirror 镜像，首启约百兆下载） |
-| `CHUNK_CHARS` / `OVERLAP_CHARS` / `TOP_K` | `2048` / `512` / `8` | 切块与检索参数 |
+| `CHUNK_CHARS` / `OVERLAP_CHARS` / `TOP_K` | `2048` / `512` / `8` | 切块与检索参数（重叠超过半个窗口时按半个窗口计） |
+| `RETRIEVAL_MODE` | `hybrid` | 检索排序：`hybrid` 融合 / `dense` 仅向量（旧行为）/ `bm25` 仅关键词 |
 | `AGENT_MAX_STEPS` | `8` | 自主学习 Agent 每会话最大执行步数（限制在 6–10） |
-| `JINGZHOU_DATA` | `./data` | 持久化与示例数据目录（含 Agent 会话 `data/agent/`） |
-| `PORT` | `8777` | 服务端口 |
+| `JINGZHOU_DATA` | `./data` | 持久化与示例数据目录（含 Agent 会话 `data/agent/`、对话 `data/chat/`） |
+| `HOST` / `PORT` | `127.0.0.1` / `8777` | 监听地址与端口；需要局域网内其他设备访问时设 `HOST=0.0.0.0` |
+| `CORS_ORIGINS` | 空 | 允许跨源调用的来源，逗号分隔；留空即不开放（自带前端是同源的，用不到） |
 
 ## 项目结构
 
@@ -145,8 +170,12 @@ jingzhou/
 │   ├── agent.py            # 单 Agent 循环：决策/执行/守卫/SSE 事件
 │   ├── tools.py            # Agent 工具白名单（包装既有能力 + 参数校验）
 │   ├── memory.py           # Agent 会话状态与 JSON 落盘（data/agent/）
+│   ├── conversations.py    # 多轮对话：落盘（data/chat/）、追问改写、历史裁剪
 │   ├── features.py         # quiz / study-guide 生成内核（路由与工具共用）
-│   ├── store.py            # DocStore：检索 / 持久化 / 解释字段
+│   ├── store.py            # DocStore：混合检索 / 持久化 / 解释字段
+│   ├── bm25.py             # BM25 与 RRF（纯 Python，无分词依赖）
+│   ├── extract.py          # DOCX / EPUB 文本抽取（标准库）
+│   ├── anki.py             # 笺卡导出：.apkg 与 Anki 文本格式
 │   ├── chunking.py         # 段落感知切块（纯函数，可单测）
 │   ├── embeddings.py       # BGE 模型加载与编码线程池
 │   ├── llm.py              # OpenAI 兼容客户端、补全/JSON 帮手、错误脱敏
@@ -160,11 +189,27 @@ jingzhou/
 ├── data/
 │   ├── sample/             # 内置示例教材《线性代数导引》
 │   ├── store/              # 向量落盘目录（已 gitignore）
-│   └── agent/              # Agent 会话落盘目录（已 gitignore）
-├── tests/                  # unittest：切块 / 检索契约 / Agent 循环
+│   ├── agent/              # Agent 会话落盘目录（已 gitignore）
+│   └── chat/               # 对话落盘目录（已 gitignore）
+├── tests/                  # unittest：切块 / 混合检索 / 对话 / 抽取 / Anki / Agent / 接口安全
 ├── start.sh / start.bat    # 一键启动（建 venv、装依赖、引导配置）
 └── INTERVIEW.md            # 设计与讲述稿
 ```
+
+## 安全说明
+
+径舟是单机工具，没有登录。v0.4 起默认按这个前提收紧：
+
+- **只监听本机**（`127.0.0.1`）。在宿舍或校园网里把无登录的服务开在 `0.0.0.0`，同一网络的人就能读你的资料、花你的 Key；确实需要时再显式设 `HOST=0.0.0.0`。
+- **默认不开 CORS**。否则你浏览的任意网页都能调用本机接口。
+- **落盘用的编号都做校验**：文档、Agent 会话、对话的 id 只允许字母数字（文档另允许下划线和连字符），请求层与存储层各校验一次。此前 `/api/remove` 可被 `../` 形式的 id 用来删除书斋目录之外的文件，已修复。
+
+## 已知局限
+
+- **混合检索与多轮对话尚未在真实模型上验证。** 这批功能开发时的环境下载不了 BGE 模型、也没有 LLM Key，验证手段是单元测试，以及用假嵌入 + 假 LLM 把真实服务跑起来后在浏览器里走查全流程。RRF 用的是未调参的标准默认值（k=60，两路等权），在真实教材上是否优于纯向量，需要你自己用几个熟悉的问题对比一下（`/demo.html` 可切换三种排序）；不满意时 `RETRIEVAL_MODE=dense` 即回到原行为。
+- BM25 的中文切分是字二元组，不是真正的分词：够用于定理名、术语这类字面匹配，但会把一些常见二元组也算作命中。
+- 扫描版 PDF 没有文字层，仍然无法索引（没有 OCR）。DOCX 的页眉页脚、脚注不进入索引。
+- 追问改写每轮多一次小的 LLM 调用。
 
 ## 回退
 
@@ -180,10 +225,13 @@ git fetch origin && git checkout backup/pre-hardening
 - [x] 可解释检索与来源回查
 - [x] 自主学习 Agent（单 Agent 多步闭环）
 - [x] Agent 会话恢复（待作答续跑 + 总结回看）
-- [ ] BM25 混合检索
-- [ ] 会话历史与多轮对话
-- [ ] 更多文档格式（DOCX / EPUB）
-- [ ] 闪卡导出 Anki
+- [x] BM25 混合检索
+- [x] 会话历史与多轮对话
+- [x] 更多文档格式（DOCX / EPUB）
+- [x] 闪卡导出 Anki
+- [ ] 在真实教材上做一组小规模检索对比（纯向量 / 关键词 / 融合），用数据决定融合权重
+- [ ] 重排序（reranker）与扫描版 PDF 的 OCR
+- [ ] Agent 复习结果接入对话历史与笺卡
 
 ## 许可
 
