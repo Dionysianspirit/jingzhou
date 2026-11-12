@@ -9,6 +9,8 @@
   main { max-width: 720px; margin: 0 auto; }
   button { background: #1E2937; color: #F7F5F2; border: 0; border-radius: 999px; padding: 8px 16px; cursor: pointer; font: inherit; }
   textarea { width: 100%; min-height: 72px; margin: 12px 0; padding: 10px; font: inherit; }
+  select { font: inherit; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(30,41,55,.2); background: #F7F5F2; }
+  .meta { color: #4A5568; font-size: 13px; margin: 4px 0 12px; }
   .src { background: #F7F5F2; border-radius: 8px; padding: 10px 12px; margin: 8px 0; cursor: pointer; }
   .why { color: #4A5568; font-size: 13px; }
   pre { white-space: pre-wrap; }
@@ -23,7 +25,18 @@
     <button id="guide" type="button">指南</button>
   </p>
   <textarea id="q">秩-零化度定理在说什么？和齐次方程有没有非零解有什么关系？</textarea>
-  <p><button id="ask" type="button">提问</button></p>
+  <p>
+    <button id="ask" type="button">提问</button>
+    <label>检索排序
+      <select id="mode">
+        <option value="">默认（服务端配置）</option>
+        <option value="hybrid">融合：语义 + 关键词</option>
+        <option value="dense">语义：仅余弦</option>
+        <option value="bm25">关键词：仅 BM25</option>
+      </select>
+    </label>
+  </p>
+  <div class="meta" id="explain"></div>
   <pre id="out">尚未提问。</pre>
   <div id="hits"></div>
 </main>
@@ -43,16 +56,27 @@ document.getElementById("ask").onclick = async () => {
   const query = document.getElementById("q").value.trim();
   out.textContent = "检索并作答…";
   hitsEl.innerHTML = "";
+  const mode = document.getElementById("mode").value;
+  const payload = { query, doc_ids: [docId], k: 6 };
+  if (mode) payload.mode = mode;
   const search = await fetch("/api/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, doc_ids: [docId], k: 6 }),
+    body: JSON.stringify(payload),
   });
   const found = await search.json();
+  const explain = found.explain || {};
+  document.getElementById("explain").textContent =
+    explain.mode ? "本次排序：" + explain.mode + " · " + (explain.fusion || "") : "";
   (found.hits || []).forEach((h) => {
     const d = document.createElement("div");
     d.className = "src";
-    d.innerHTML = "<b>" + h.doc_name + " 片段" + h.chunk_idx + "</b> · " + Number(h.score).toFixed(3) + "<div class=why>" + (h.why || "") + "</div>";
+    const title = document.createElement("b");
+    title.textContent = h.doc_name + " 片段" + h.chunk_idx;
+    const why = document.createElement("div");
+    why.className = "why";
+    why.textContent = h.why || "";
+    d.append(title, " · " + Number(h.score).toFixed(3), why);
     d.onclick = async () => {
       const c = await fetch("/api/docs/" + h.doc_id + "/chunks/" + h.chunk_idx).then((r) => r.json());
       alert(c.text || "无片段");

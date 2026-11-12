@@ -26,6 +26,11 @@ let quizSubmitted = false;
 let quizTrace = [];
 let quizStartTime = 0;
 let quizErrorHistory = [];
+let convId = null;
+let convs = [];
+let toastUntil = 0;
+let toastTimer = null;
+const TOAST_MS = 2800;
 
 uploadZone.addEventListener("click", () => fileInput.click());
 uploadZone.addEventListener("dragover", (e) => { e.preventDefault(); uploadZone.classList.add("drag-over"); });
@@ -47,6 +52,7 @@ $("#modalClose")?.addEventListener("click", closeModal);
 modalMask?.addEventListener("click", (e) => { if (e.target === modalMask) closeModal(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
 $("#sampleBtn")?.addEventListener("click", loadSample);
+$("#convNew")?.addEventListener("click", newConversation);
 
 async function handleFiles(files) {
   for (const f of files) {
@@ -54,10 +60,12 @@ async function handleFiles(files) {
     try {
       if (lower.endsWith(".pdf") || f.type === "application/pdf") {
         await indexPDF(f);
+      } else if (lower.endsWith(".docx") || lower.endsWith(".epub")) {
+        await indexBinary(f);
       } else if (lower.endsWith(".txt") || lower.endsWith(".md") || (f.type || "").startsWith("text/")) {
-        await indexText(f.name.replace(/\.(txt|md)$/i, ""), await f.text());
+        await indexText(f.name.replace(/\.(txt|md)$/i, ""), await readTextSmart(f));
       } else {
-        toast("暂只收 PDF / TXT / MD：" + f.name);
+        toast("暂只收 PDF / DOCX / EPUB / TXT / MD：" + f.name);
       }
     } catch (err) {
       toast("收卷失败：" + (err.message || f.name));
@@ -91,14 +99,61 @@ function setPg(p) {
   if (p >= 100) setTimeout(() => { bar.style.width = "0"; }, 400);
 }
 
+function newDocId() {
+  return "d" + Math.random().toString(36).slice(2, 10);
+}
+
+async function errDetail(res, fallback) {
+  try {
+    const data = await res.json();
+    return typeof data.detail === "string" ? data.detail : fallback;
+  } catch (e) { return fallback; }
+}
+
+// 中文 TXT 仍常见 GBK 编码：先按 UTF-8 严格解码，失败再按 GB18030。
+async function readTextSmart(file) {
+  const buf = await file.arrayBuffer();
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); }
+  catch (e) {
+    try { return new TextDecoder("gb18030").decode(buf); }
+    catch (e2) { return new TextDecoder("utf-8").decode(buf); }
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",", 2)[1] || "");
+    reader.onerror = () => reject(new Error("文件读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function indexText(name, text) {
-  const id = "d" + Math.random().toString(36).slice(2, 10);
   const res = await fetch(API + "/api/index", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ doc_id: id, name, text }),
+    body: JSON.stringify({ doc_id: newDocId(), name, text }),
   });
-  if (!res.ok) { toast("收卷未成"); setPg(0); return; }
+  if (!res.ok) { setPg(0); throw new Error(await errDetail(res, name)); }
+  setPg(100);
+  toast("已收卷：" + name);
+  await refreshDocs();
+}
+
+// DOCX / EPUB 交给本机服务解析（标准库，不出本机），再走同一条索引链路。
+async function indexBinary(file) {
+  const name = file.name.replace(/\.(docx|epub)$/i, "");
+  setPg(10);
+  toast("正在解析 " + file.name + "…");
+  const data_b64 = await fileToBase64(file);
+  setPg(45);
+  const res = await fetch(API + "/api/index-file", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ doc_id: newDocId(), name, filename: file.name, data_b64 }),
+  });
+  if (!res.ok) { setPg(0); throw new Error(await errDetail(res, file.name)); }
   setPg(100);
   toast("已收卷：" + name);
   await refreshDocs();
@@ -129,9 +184,12 @@ function renderDocs() {
     return;
   }
   docList.innerHTML = allDocs.map((d) =>
-    `<div class="doc-card${selectedDocs.has(d.id) ? " selected" : ""}" data-id="${d.id}">
-      <div class="dc-name">${esc(d.name)}</div>
-      <div class="dc-meta">${d.chunks} 片段</div>
+    `<div class="doc-card${selectedDocs.has(d.id) ? " selected" : ""}" data-id="${esc(d.id)}">
+      <div class="dc-main">
+        <div class="dc-name" title="${esc(d.name)}">${esc(d.name)}</div>
+        <div class="dc-meta">${d.chunks} 片段</div>
+      </div>
+      <button type="button" class="dc-del" title="移出书斋" aria-label="将《${esc(d.name)}》移出书斋">✕</button>
     </div>`
   ).join("");
   docList.querySelectorAll(".doc-card").forEach((el) => {
@@ -140,14 +198,61 @@ function renderDocs() {
       if (selectedDocs.has(id)) selectedDocs.delete(id); else selectedDocs.add(id);
       renderDocs(); updateInput();
     });
+    el.querySelector(".dc-del").addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeDoc(el.dataset.id);
+    });
   });
+}
+
+async function removeDoc(id) {
+  const doc = allDocs.find((d) => d.id === id);
+  if (!doc || isStreaming) return;
+  if (!window.confirm(`将《${doc.name}》移出书斋？已建立的索引会一并删除。`)) return;
+  try {
+    const res = await fetch(API + "/api/remove", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc_id: id }),
+    });
+    if (!res.ok) throw new Error(await errDetail(res, "移出未成"));
+    selectedDocs.delete(id);
+    await refreshDocs();
+    toast("已移出：" + doc.name);
+  } catch (e) { toast(e.message || "移出未成"); }
 }
 
 function updateInput() {
   const on = selectedDocs.size > 0 && !isStreaming;
   chatInput.disabled = sendBtn.disabled = !on;
   document.querySelectorAll(".feat-card").forEach((b) => { b.disabled = !on; });
-  headerInfo.textContent = selectedDocs.size ? `已择 ${selectedDocs.size} 卷` : "择卷而问";
+  // 提示语要留给人看清：还在展示期内就不抢它的位置
+  if (Date.now() >= toastUntil) headerInfo.textContent = statusLine();
+}
+
+function statusLine() {
+  return selectedDocs.size ? `已择 ${selectedDocs.size} 卷` : "择卷而问";
+}
+
+// 读取 SSE：逐块解析 `data: {...}`，每个事件交给 onPayload。
+async function readSSE(res, onPayload) {
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const parts = buf.split("\n\n");
+    buf = parts.pop();
+    for (const part of parts) {
+      for (const line of part.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6);
+        if (data === "[DONE]") continue;
+        try { onPayload(JSON.parse(data)); } catch (e) {}
+      }
+    }
+  }
 }
 
 async function send() {
@@ -156,42 +261,49 @@ async function send() {
   chatInput.value = "";
   if (chatEmpty) chatEmpty.style.display = "none";
   addMsg("user", query);
-  const bubble = addMsg("assistant", "小舟研墨中…");
+  const el = addMsg("assistant", "小舟研墨中…");
+  const bubble = el.querySelector(".msg-bubble");
+  bubble.classList.add("pending");
   isStreaming = true; updateInput();
-  let text = ""; let sources = [];
+  let text = ""; let sources = []; let meta = {}; let failed = "";
   try {
+    const body = { query, doc_ids: [...selectedDocs], system: SYSTEM_PROMPT, remember: true };
+    if (convId) body.conversation_id = convId;
     const res = await fetch(API + "/api/chat", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, doc_ids: [...selectedDocs], system: SYSTEM_PROMPT }),
+      body: JSON.stringify(body),
     });
-    const raw = await res.text();
-    raw.split("\n").forEach((line) => {
-      if (!line.startsWith("data: ") || line.includes("[DONE]")) return;
-      try {
-        const p = JSON.parse(line.slice(6));
-        if (p.text) text += p.text;
+    if (!res.ok) {
+      failed = await errDetail(res, `请求失败（${res.status}）`);
+      if (res.status === 404 && convId) convId = null;  // 对话已被删除：下一问另起新对话
+    } else {
+      await readSSE(res, (p) => {
+        if (p.text) {
+          text += p.text;
+          bubble.classList.remove("pending");
+          bubble.textContent = text;
+          messages.scrollTop = messages.scrollHeight;
+        }
         if (p.sources) sources = p.sources;
-        if (p.error) text = p.error;
-      } catch (e) {}
-    });
+        if (p.search_query !== undefined) meta = p;
+        if (p.conversation_id) convId = p.conversation_id;
+        if (p.error) failed = p.error;
+      });
+    }
   } catch (e) {
-    text = "舟楫失连，请再试";
+    failed = failed || "舟楫失连，请再试";
   }
-  bubble.querySelector(".msg-bubble").textContent = text || "未得回答";
-  if (sources.length) {
-    const box = document.createElement("div");
-    box.className = "msg-sources";
-    box.innerHTML = `<span class="src-chip" style="cursor:default">检索解释：BGE 向量余弦 Top-${sources.length}</span>`;
-    sources.forEach((s) => {
-      const chip = document.createElement("button");
-      chip.type = "button"; chip.className = "src-chip";
-      chip.textContent = `${s.name} 片段${s.chunk} · ${s.score}`;
-      chip.onclick = () => openChunk(s);
-      box.appendChild(chip);
-    });
-    bubble.appendChild(box);
+  bubble.classList.remove("pending");
+  if (text) fillAnswer(el, text, sources, meta.rewritten ? meta.search_query : "");
+  if (failed) {
+    if (text) addNote(el, failed, "err");
+    else { bubble.textContent = failed; bubble.classList.add("err"); }
+  } else if (!text) {
+    bubble.textContent = "未得回答";
   }
   isStreaming = false; updateInput();
+  messages.scrollTop = messages.scrollHeight;
+  refreshConversations();
 }
 
 function addMsg(role, text) {
@@ -201,6 +313,130 @@ function addMsg(role, text) {
   messages.appendChild(el);
   messages.scrollTop = messages.scrollHeight;
   return el;
+}
+
+function addNote(el, text, cls) {
+  const note = document.createElement("div");
+  note.className = "msg-note" + (cls ? " " + cls : "");
+  note.textContent = text;
+  el.appendChild(note);
+  return note;
+}
+
+const MODE_LABELS = { hybrid: "语义 + 关键词融合", dense: "BGE 向量余弦", bm25: "BM25 关键词" };
+
+// 一轮回答的完整呈现：正文、（若被改写）实际用于检索的问句、可点开的来源笺。
+function fillAnswer(el, text, sources, searchQuery) {
+  const bubble = el.querySelector(".msg-bubble");
+  bubble.classList.add("rendered");
+  bubble.innerHTML = renderMd(text);
+  if (searchQuery) {
+    const note = addNote(el, "");
+    note.innerHTML = `<b>检索问句：</b>${esc(searchQuery)}`;
+    note.title = "追问先被改写成独立问句，再拿去检索教材";
+  }
+  if (!sources || !sources.length) return;
+  const box = document.createElement("div");
+  box.className = "msg-sources";
+  const mode = MODE_LABELS[sources[0].mode] || MODE_LABELS.dense;
+  box.innerHTML = `<span class="src-chip label">检索解释：${esc(mode)} Top-${sources.length}</span>`;
+  sources.forEach((s) => {
+    const chip = document.createElement("button");
+    chip.type = "button"; chip.className = "src-chip";
+    chip.textContent = `${s.name} 片段${s.chunk} · ${s.score}`;
+    if (s.why) chip.title = s.why;
+    chip.onclick = () => openChunk(s);
+    box.appendChild(chip);
+  });
+  el.appendChild(box);
+}
+
+// ---- 对话：列表、恢复、删除 ----
+async function refreshConversations() {
+  try {
+    const res = await fetch(API + "/api/conversations");
+    convs = res.ok ? await res.json() : [];
+  } catch (e) { convs = []; }
+  renderConversations();
+}
+
+function renderConversations() {
+  const box = $("#convList");
+  if (!box) return;
+  if (!convs.length) {
+    box.innerHTML = '<div class="doc-empty">问过的话会留在这里</div>';
+    return;
+  }
+  box.innerHTML = convs.map((c) =>
+    `<div class="conv-item${c.conversation_id === convId ? " active" : ""}" data-id="${esc(c.conversation_id)}">
+      <div class="cv-main">
+        <div class="cv-title" title="${esc(c.title)}">${esc(c.title || "未命名对话")}</div>
+        <div class="cv-meta">${c.exchanges} 问 · ${fmtTime(c.updated_at)}</div>
+      </div>
+      <button type="button" class="cv-del" title="删除对话" aria-label="删除对话：${esc(c.title)}">✕</button>
+    </div>`
+  ).join("");
+  box.querySelectorAll(".conv-item").forEach((el) => {
+    el.addEventListener("click", () => openConversation(el.dataset.id));
+    el.querySelector(".cv-del").addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteConversation(el.dataset.id);
+    });
+  });
+}
+
+function clearMessages() {
+  messages.querySelectorAll(".msg").forEach((el) => el.remove());
+}
+
+function newConversation() {
+  if (isStreaming) return;
+  convId = null;
+  clearMessages();
+  if (chatEmpty) chatEmpty.style.display = "";
+  renderConversations();
+  if (!chatInput.disabled) chatInput.focus();
+}
+
+async function openConversation(id) {
+  if (isStreaming) return;
+  let conv;
+  try {
+    const res = await fetch(API + "/api/conversations/" + encodeURIComponent(id));
+    if (!res.ok) throw new Error("对话已不存在");
+    conv = await res.json();
+  } catch (e) {
+    toast(e.message || "对话未能载入");
+    refreshConversations();
+    return;
+  }
+  convId = conv.conversation_id;
+  clearMessages();
+  if (chatEmpty) chatEmpty.style.display = "none";
+  let lastQuestion = "";
+  (conv.turns || []).forEach((t) => {
+    if (t.role === "user") { lastQuestion = t.content; addMsg("user", t.content); return; }
+    const el = addMsg("assistant", "");
+    const rewritten = t.search_query && t.search_query !== lastQuestion ? t.search_query : "";
+    fillAnswer(el, t.content, t.sources || [], rewritten);
+  });
+  // 接着聊时沿用这段对话当时选的卷册（只保留仍在书斋里的）。
+  const live = new Set(allDocs.map((d) => d.id));
+  const keep = (conv.doc_ids || []).filter((d) => live.has(d));
+  if (keep.length) selectedDocs = new Set(keep);
+  renderDocs(); updateInput(); renderConversations();
+  messages.scrollTop = messages.scrollHeight;
+}
+
+async function deleteConversation(id) {
+  if (isStreaming) return;
+  const conv = convs.find((c) => c.conversation_id === id);
+  if (!window.confirm(`删除对话「${conv ? conv.title : id}」？`)) return;
+  try {
+    await fetch(API + "/api/conversations/" + encodeURIComponent(id), { method: "DELETE" });
+  } catch (e) {}
+  if (id === convId) newConversation();
+  refreshConversations();
 }
 
 function openModal(title) {
@@ -267,10 +503,57 @@ function renderFlashcard() {
         </div>
       </div>
       <span class="fc-hint">点击卡片翻转</span>
+      <div class="fc-export">
+        <button type="button" id="fcAnki">导出 Anki 卡包</button>
+        <button type="button" id="fcTxt" class="ghost">导出文本</button>
+      </div>
+      <span class="fc-export-note" id="fcExportNote">共 ${fcCards.length} 张 · 重复导入同一批卡片会更新而不是重复添加</span>
     </div>`;
+  $("#fcAnki").addEventListener("click", () => exportAnki("apkg"));
+  $("#fcTxt").addEventListener("click", () => exportAnki("tsv"));
   $("#fcCard").addEventListener("click", () => $("#fcCard").classList.toggle("flipped"));
   $("#fcPrev").addEventListener("click", () => { if (fcIdx > 0) { fcIdx -= 1; renderFlashcard(); } });
   $("#fcNext").addEventListener("click", () => { if (fcIdx < fcCards.length - 1) { fcIdx += 1; renderFlashcard(); } });
+}
+
+function ankiDeckName() {
+  if (selectedDocs.size === 1) {
+    const doc = allDocs.find((d) => selectedDocs.has(d.id));
+    if (doc) return "径舟::" + doc.name.replace(/::/g, " ").slice(0, 60);
+  }
+  return "径舟";
+}
+
+async function exportAnki(format) {
+  const note = $("#fcExportNote");
+  const buttons = [$("#fcAnki"), $("#fcTxt")];
+  const deck = ankiDeckName();
+  buttons.forEach((b) => { if (b) b.disabled = true; });
+  try {
+    const res = await fetch(API + "/api/flashcards/export", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cards: fcCards.map((c) => ({ q: String(c.q ?? ""), a: String(c.a ?? "") })),
+        deck, format,
+      }),
+    });
+    if (!res.ok) throw new Error(await errDetail(res, "导出未成"));
+    const blob = await res.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = deck.replace(/::/g, "-") + (format === "tsv" ? ".txt" : ".apkg");
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 4000);
+    const count = res.headers.get("X-Card-Count") || fcCards.length;
+    if (note) note.textContent = format === "tsv"
+      ? `已导出 ${count} 张为文本：在 Anki 里用「文件 → 导入」选择该文件`
+      : `已导出 ${count} 张到牌组「${deck}」：双击 .apkg 即可导入 Anki`;
+  } catch (e) {
+    if (note) note.textContent = e.message || "导出未成";
+  }
+  buttons.forEach((b) => { if (b) b.disabled = false; });
 }
 
 async function loadQuiz(body) {
@@ -477,29 +760,56 @@ async function loadReport(body) {
   if (!res.ok) { modalBody.innerHTML = `<p class="err-line">${esc(failBox(res, await res.text()))}</p>`; return; }
   modalBody.innerHTML = '<div class="report-content streaming" id="reportOut"></div>';
   const out = $("#reportOut");
-  const raw = await res.text();
   let text = "";
-  raw.split("\n").forEach((line) => {
-    if (!line.startsWith("data: ") || line.includes("[DONE]")) return;
-    try {
-      const p = JSON.parse(line.slice(6));
-      if (p.text) text += p.text;
-      if (p.error) text += p.error;
-    } catch (e) {}
+  await readSSE(res, (p) => {
+    if (p.text) text += p.text;
+    if (p.error) text += p.error;
+    out.textContent = text;
+    modalBody.scrollTop = modalBody.scrollHeight;
   });
   out.classList.remove("streaming");
   out.innerHTML = renderMd(text || "未得析报");
 }
 
+// 极简 Markdown：标题、无序/有序列表、加粗、行内代码、段落。
+// 先整体转义再生成标签，模型输出里的任何 HTML 都只会被当成文字。
 function renderMd(t) {
-  let h = esc(t);
-  h = h.replace(/^### (.+)$/gm, "<h3>$1</h3>");
-  h = h.replace(/^## (.+)$/gm, "<h2>$1</h2>");
-  h = h.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-  h = h.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  h = h.replace(/^- (.+)$/gm, "<li>$1</li>");
-  h = h.replace(/(<li>.*<\/li>\n?)+/g, "<ul>$&</ul>");
-  return h;
+  const inline = (x) => x
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+  const out = [];
+  let list = null;
+  let para = [];
+  const flushPara = () => {
+    if (para.length) { out.push("<p>" + para.join("<br>") + "</p>"); para = []; }
+  };
+  const flushList = () => {
+    if (!list) return;
+    out.push(`<${list.tag}>` + list.items.map((i) => `<li>${i}</li>`).join("") + `</${list.tag}>`);
+    list = null;
+  };
+  const pushItem = (tag, item) => {
+    flushPara();
+    if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
+    list.items.push(inline(item));
+  };
+  for (const raw of esc(t).split("\n")) {
+    const line = raw.trimEnd();
+    let m;
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    if ((m = line.match(/^(#{1,4})\s+(.+)$/))) {
+      flushPara(); flushList();
+      const level = Math.min(m[1].length, 3);
+      out.push(`<h${level}>${inline(m[2])}</h${level}>`);
+      continue;
+    }
+    if ((m = line.match(/^\s*[-*•]\s+(.+)$/))) { pushItem("ul", m[1]); continue; }
+    if ((m = line.match(/^\s*\d+[.)、]\s+(.+)$/))) { pushItem("ol", m[1]); continue; }
+    flushList();
+    para.push(inline(line));
+  }
+  flushPara(); flushList();
+  return out.join("");
 }
 
 async function loadTable(body) {
@@ -539,13 +849,31 @@ async function loadInfographic(body) {
 }
 
 async function openChunk(s) {
-  const item = await fetch(API + "/api/docs/" + s.doc_id + "/chunks/" + (s.chunk ?? s.chunk_idx)).then((r) => r.json());
+  const idx = s.chunk ?? s.chunk_idx;
+  let item = {};
+  try {
+    const res = await fetch(API + "/api/docs/" + encodeURIComponent(s.doc_id) + "/chunks/" + idx);
+    item = res.ok ? await res.json() : { text: "该片段已不在书斋中（卷册可能已被移出）。" };
+  } catch (e) { item = { text: "片段未能载入。" }; }
   let drawer = document.querySelector(".chunk-drawer");
   if (!drawer) { drawer = document.createElement("div"); drawer.className = "chunk-drawer"; document.body.appendChild(drawer); }
-  drawer.innerHTML = `<div>${esc(item.doc_name || s.name)} 片段${s.chunk ?? s.chunk_idx}</div><pre>${esc(item.text || "")}</pre>`;
+  drawer.innerHTML = `
+    <div class="cd-head">
+      <span class="cd-title">${esc(item.doc_name || s.name || "")} 片段${esc(idx)}</span>
+      <button type="button" class="cd-close" aria-label="关闭原文">✕</button>
+    </div>
+    ${s.why ? `<div class="cd-why">${esc(s.why)}</div>` : ""}
+    <pre>${esc(item.text || "")}</pre>`;
+  drawer.querySelector(".cd-close").addEventListener("click", () => drawer.remove());
 }
 
-function toast(msg) { headerInfo.textContent = msg; }
+// 顶栏状态行兼作提示：停留片刻后回到「已择 N 卷」。
+function toast(msg) {
+  headerInfo.textContent = msg;
+  toastUntil = Date.now() + TOAST_MS;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { headerInfo.textContent = statusLine(); }, TOAST_MS);
+}
 
 // ---- 自主学习 Agent：目标 → 检索 → 诊断 → 判分 → 讲解 → 总结 ----
 const AG_TOOL_NAMES = {
@@ -845,5 +1173,5 @@ function esc(s) {
   });
 }
 
-refreshDocs();
+refreshDocs().then(refreshConversations);
 window.openChunk = openChunk;

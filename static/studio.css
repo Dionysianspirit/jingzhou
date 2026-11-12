@@ -164,3 +164,57 @@ textarea { flex: 1; border: var(--border); border-radius: var(--r-md); padding: 
 .ag-resume-btn { flex: 0 0 auto; padding: 6px 14px; border: none; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; font-size: 13px; }
 .ag-resume-btn.ghost { background: var(--paper); color: var(--ink-2); border: var(--border); }
 .src-chip.warn { border-color: #A8705A; color: #A8705A; cursor: default; opacity: .85; }
+
+/* ---- v0.4：卷册移出、对话列表、流式问答、Anki 导出 ---- */
+.up-hint { margin-top: 6px; font-size: 11px; letter-spacing: .04em; color: var(--ink-3); }
+.upload-zone.drag-over { border-color: var(--accent); background: var(--accent-lt); }
+.doc-empty { padding: 14px 8px; font-size: 12px; color: var(--ink-3); text-align: center; }
+.doc-card { display: flex; align-items: center; gap: 8px; }
+.dc-main { flex: 1; min-width: 0; }
+.dc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.dc-meta { font-size: 12px; color: var(--ink-3); }
+.dc-del, .cv-del { flex: 0 0 auto; width: 24px; height: 24px; border: 0; border-radius: 50%; background: transparent; color: var(--ink-3); cursor: pointer; font-size: 12px; opacity: 0; }
+.doc-card:hover .dc-del, .conv-item:hover .cv-del, .dc-del:focus-visible, .cv-del:focus-visible { opacity: 1; }
+.dc-del:hover, .cv-del:hover { background: rgba(168,112,90,.12); color: #A8705A; }
+
+.conv-box { display: flex; flex-direction: column; max-height: 34vh; border-top: var(--border); }
+.conv-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 6px; font-family: var(--serif); font-size: 14px; }
+.conv-new { border: var(--border); background: var(--raised); color: var(--accent-hov); border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.conv-new:hover { background: var(--accent-lt); }
+.conv-list { overflow: auto; padding: 0 12px 6px; }
+.conv-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 4px; border-radius: var(--r-sm); cursor: pointer; border: 1.5px solid transparent; }
+.conv-item:hover { background: var(--raised); }
+.conv-item.active { border-color: rgba(196,168,130,.45); background: var(--raised); }
+.cv-main { flex: 1; min-width: 0; }
+.cv-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-meta { font-size: 11px; color: var(--ink-3); }
+
+.msg.user .msg-body { display: flex; justify-content: flex-end; }
+.msg.user .msg-bubble { background: var(--accent-lt); max-width: 80%; white-space: pre-wrap; }
+.msg.assistant .msg-bubble { white-space: pre-wrap; }
+.msg.assistant .msg-bubble.rendered { white-space: normal; }
+.msg-bubble.pending { color: var(--ink-3); }
+.msg-bubble.err { color: #A8705A; }
+.msg-bubble h1, .msg-bubble h2, .msg-bubble h3 { font-family: var(--serif); font-size: 15px; margin: 10px 0 4px; }
+.msg-bubble ul { padding-left: 20px; margin: 4px 0; }
+.msg-bubble p { margin: 0 0 8px; }
+.msg-bubble p:last-child { margin-bottom: 0; }
+.msg-note { margin-top: 6px; font-size: 12px; color: var(--ink-3); }
+.msg-note b { color: var(--ink-2); font-weight: 500; }
+.src-chip.label { cursor: default; background: transparent; color: var(--ink-3); }
+
+.chunk-drawer { box-shadow: 0 10px 30px rgba(30,41,55,.16); border: var(--border); z-index: 30; }
+.cd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.cd-title { font-family: var(--serif); font-size: 14px; }
+.cd-close { border: 0; background: transparent; cursor: pointer; color: var(--ink-3); font-size: 13px; }
+.cd-why { font-size: 12px; color: var(--amber-deep); margin-bottom: 8px; line-height: 1.6; }
+.chunk-drawer pre { white-space: pre-wrap; font-family: var(--sans); font-size: 13px; line-height: 1.7; }
+
+.fc-export { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; }
+.fc-export button { padding: 7px 16px; border-radius: 999px; border: 0; background: var(--accent); color: #fff; cursor: pointer; font: inherit; font-size: 13px; }
+.fc-export button.ghost { background: var(--paper); color: var(--ink-2); border: var(--border); }
+.fc-export button:disabled { opacity: .5; cursor: wait; }
+.fc-export-note { font-size: 12px; color: var(--ink-3); text-align: center; }
+.report-content p { margin: 0 0 10px; }
+.report-content ul, .report-content ol, .msg-bubble ol { padding-left: 22px; margin: 4px 0 10px; }
+.report-content code, .msg-bubble code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .92em; background: rgba(30,41,55,.06); border-radius: 4px; padding: 1px 5px; }

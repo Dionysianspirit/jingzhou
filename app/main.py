@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
         await llm.llm.close()
 
 
-app = FastAPI(title="径舟", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="径舟", version="0.4.0", lifespan=lifespan)
 # The bundled frontend is served from this same origin and needs no CORS.
 # Cross-origin access stays closed unless CORS_ORIGINS names who may call:
 # an open "*" would let any web page the user visits read their documents
@@ -247,6 +247,7 @@ async def chat(req: ChatRequest):
                     "preview": r["text"][:200],
                     "why": r.get("why", ""),
                     "overlap": r.get("overlap", []),
+                    "mode": r.get("mode", ""),
                 }
                 for r in results
             ]

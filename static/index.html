@@ -26,10 +26,18 @@
   <div class="upload-zone" id="uploadZone">
     <div class="up-icon">📜</div>
     <p>投卷入舱，或 <b>轻点以传</b></p>
-    <input type="file" accept=".pdf,.txt,.md" multiple hidden id="fileInput">
+    <p class="up-hint">PDF · DOCX · EPUB · TXT · MD</p>
+    <input type="file" accept=".pdf,.txt,.md,.docx,.epub" multiple hidden id="fileInput">
   </div>
   <button class="sample-btn" id="sampleBtn" type="button">载入示例教材《线性代数导引》</button>
   <div class="doc-list" id="docList"></div>
+  <div class="conv-box">
+    <div class="conv-head">
+      <span>对话</span>
+      <button class="conv-new" id="convNew" type="button">＋ 新对话</button>
+    </div>
+    <div class="conv-list" id="convList"></div>
+  </div>
   <div class="sb-foot"><span id="docCount">0</span> 卷在舱</div>
 </aside>
 <main class="main">
